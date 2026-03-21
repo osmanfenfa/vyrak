@@ -1,0 +1,13 @@
+fastapi
+uvicorn
+pydantic
+python-dotenv
+sqlalchemy
+alembic
+redis
+numpy
+pandas
+scikit-learn
+joblib
+torch
+pytest
