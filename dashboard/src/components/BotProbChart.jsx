@@ -1,36 +1,45 @@
-/**
- * BotProbChart — scrolling line chart of P(bot) and Trust over time.
- * Shows the last N action evaluations.
- *
- * Props:
- *   feed   {Array}  array of DecisionResponse objects (newest first)
- *   limit  {number} max data points to show (default 40)
- */
-
 import {
-  LineChart, Line, XAxis, YAxis, CartesianGrid,
-  Tooltip, Legend, ResponsiveContainer, ReferenceLine,
+  CartesianGrid,
+  Legend,
+  Line,
+  LineChart,
+  ReferenceLine,
+  ResponsiveContainer,
+  Tooltip,
+  XAxis,
+  YAxis,
 } from "recharts";
 
 const CHALLENGE_LINE = 50;
-const BLOCK_LINE     = 20;
+const BLOCK_LINE = 20;
 
-function formatTick(val) {
-  return `${Math.round(val * 100)}%`;
+function percentTick(value) {
+  return `${Math.round(value * 100)}%`;
 }
 
 function CustomTooltip({ active, payload, label }) {
   if (!active || !payload?.length) return null;
+
   return (
-    <div style={{
-      background: "white", border: "1px solid #D3D1C7",
-      borderRadius: 8, padding: "8px 12px", fontSize: 12,
-    }}>
-      <p style={{ marginBottom: 4, color: "#5F5E5A" }}>Action #{label}</p>
-      {payload.map(p => (
-        <p key={p.name} style={{ color: p.color, margin: "2px 0" }}>
-          {p.name}: <strong>
-            {p.name === "P(bot)" ? `${(p.value * 100).toFixed(1)}%` : p.value.toFixed(1)}
+    <div
+      style={{
+        background: "#fff",
+        border: "1px solid #d9dee5",
+        borderRadius: 8,
+        padding: "8px 10px",
+        fontSize: 12,
+      }}
+    >
+      <p className="muted mono" style={{ marginBottom: 4 }}>
+        Action #{label}
+      </p>
+      {payload.map((entry) => (
+        <p key={entry.name} style={{ color: entry.color, margin: "2px 0" }}>
+          {entry.name}:{" "}
+          <strong>
+            {entry.name === "P(bot)"
+              ? `${(entry.value * 100).toFixed(1)}%`
+              : entry.value.toFixed(1)}
           </strong>
         </p>
       ))}
@@ -39,70 +48,68 @@ function CustomTooltip({ active, payload, label }) {
 }
 
 export default function BotProbChart({ feed = [], limit = 40 }) {
-  // Feed is newest-first — reverse and slice for chronological chart
   const data = [...feed]
     .slice(0, limit)
     .reverse()
-    .map((item, i) => ({
-      idx:       i + 1,
-      "P(bot)":  item.bot_prob ?? 0,
-      "Trust":   item.trust_score ?? 100,
-      decision:  item.decision,
+    .map((item, idx) => ({
+      idx: idx + 1,
+      "P(bot)": item.bot_prob ?? 0,
+      Trust: item.trust_score ?? 100,
     }));
 
   if (!data.length) {
     return (
-      <div className="card" style={{ textAlign: "center", padding: 32 }}>
-        <div className="card-title">P(bot) &amp; Trust Over Time</div>
-        <p style={{ color: "var(--text-muted)", fontSize: 13 }}>
-          No actions evaluated yet — submit an action to begin.
-        </p>
+      <div className="card" style={{ textAlign: "center", padding: 30 }}>
+        <div className="card-title">Bot Probability and Trust</div>
+        <p className="muted">No evaluated actions yet.</p>
       </div>
     );
   }
 
   return (
     <div className="card">
-      <div className="card-title">P(bot) &amp; Trust Over Time</div>
-      <ResponsiveContainer width="100%" height={220}>
-        <LineChart data={data} margin={{ top: 4, right: 16, left: -20, bottom: 0 }}>
-          <CartesianGrid strokeDasharray="3 3" stroke="#E5E3DC" />
+      <div className="card-title">Bot Probability and Trust</div>
 
-          <XAxis
-            dataKey="idx"
-            tick={{ fontSize: 10, fill: "#888780" }}
-            label={{ value: "Action #", position: "insideBottomRight", offset: -4, fontSize: 10, fill: "#888780" }}
-          />
-
+      <ResponsiveContainer width="100%" height={230}>
+        <LineChart data={data} margin={{ top: 4, right: 14, left: -22, bottom: 0 }}>
+          <CartesianGrid stroke="#e4e8ee" strokeDasharray="3 3" />
+          <XAxis dataKey="idx" tick={{ fontSize: 10, fill: "#667085" }} />
           <YAxis
             yAxisId="trust"
             domain={[0, 100]}
-            tick={{ fontSize: 10, fill: "#888780" }}
             width={36}
+            tick={{ fontSize: 10, fill: "#667085" }}
           />
           <YAxis
             yAxisId="prob"
             orientation="right"
             domain={[0, 1]}
-            tickFormatter={formatTick}
-            tick={{ fontSize: 10, fill: "#888780" }}
             width={38}
+            tickFormatter={percentTick}
+            tick={{ fontSize: 10, fill: "#667085" }}
           />
 
           <Tooltip content={<CustomTooltip />} />
           <Legend wrapperStyle={{ fontSize: 11 }} />
 
-          {/* Trust threshold lines */}
-          <ReferenceLine yAxisId="trust" y={CHALLENGE_LINE}
-            stroke="#BA7517" strokeDasharray="4 2" strokeWidth={1} />
-          <ReferenceLine yAxisId="trust" y={BLOCK_LINE}
-            stroke="#A32D2D" strokeDasharray="4 2" strokeWidth={1} />
+          <ReferenceLine
+            yAxisId="trust"
+            y={CHALLENGE_LINE}
+            stroke="#b66b16"
+            strokeDasharray="4 2"
+          />
+          <ReferenceLine
+            yAxisId="trust"
+            y={BLOCK_LINE}
+            stroke="#b42318"
+            strokeDasharray="4 2"
+          />
 
           <Line
             yAxisId="trust"
             type="monotone"
             dataKey="Trust"
-            stroke="#0D1B2A"
+            stroke="#102338"
             strokeWidth={2}
             dot={false}
             activeDot={{ r: 4 }}
@@ -111,16 +118,16 @@ export default function BotProbChart({ feed = [], limit = 40 }) {
             yAxisId="prob"
             type="monotone"
             dataKey="P(bot)"
-            stroke="#1D9E75"
+            stroke="#0f8b6f"
             strokeWidth={2}
             dot={false}
             activeDot={{ r: 4 }}
           />
         </LineChart>
       </ResponsiveContainer>
-      <div style={{ display: "flex", gap: 12, marginTop: 4, fontSize: 10, color: "#888780" }}>
-        <span style={{ color: "#BA7517" }}>— Challenge threshold (50)</span>
-        <span style={{ color: "#A32D2D" }}>— Block threshold (20)</span>
+
+      <div className="muted mono" style={{ marginTop: 4 }}>
+        Challenge threshold: 50 | Block threshold: 20
       </div>
     </div>
   );

@@ -1,31 +1,28 @@
-/**
- * SessionSummary — compact stats panel showing session metrics.
- *
- * Props:
- *   summary   {object}  from GET /session/{id}/summary
- *   onRestore {Function}
- *   onEnd     {Function}
- */
-
 import RiskBadge from "./RiskBadge.jsx";
 
 function Stat({ label, value, accent }) {
   return (
-    <div style={{
-      background: "#F8F7F2",
-      borderRadius: "var(--radius-md)",
-      padding: "10px 14px",
-      minWidth: 72,
-      textAlign: "center",
-    }}>
-      <div style={{
-        fontSize: 22, fontWeight: 700,
-        color: accent || "var(--navy)",
-        lineHeight: 1.1,
-      }}>
+    <div
+      style={{
+        background: "#f8fafb",
+        border: "1px solid #e3e7ec",
+        borderRadius: "10px",
+        padding: "10px 12px",
+        minWidth: 72,
+        textAlign: "center",
+      }}
+    >
+      <div
+        style={{
+          fontSize: 20,
+          fontWeight: 700,
+          color: accent || "var(--navy)",
+          lineHeight: 1.1,
+        }}
+      >
         {value}
       </div>
-      <div style={{ fontSize: 10, color: "var(--text-muted)", marginTop: 2 }}>
+      <div className="muted" style={{ fontSize: 10, marginTop: 2 }}>
         {label}
       </div>
     </div>
@@ -35,46 +32,46 @@ function Stat({ label, value, accent }) {
 export default function SessionSummary({ summary, onRestore, onEnd }) {
   if (!summary) return null;
 
-  const m = summary.metrics || {};
+  const metrics = summary.metrics || {};
 
   return (
-    <div className="card flex-col" style={{ gap: 12 }}>
-      {/* Header */}
+    <div className="card" style={{ display: "flex", flexDirection: "column", gap: 12 }}>
       <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
         <div>
-          <div className="card-title" style={{ marginBottom: 0 }}>Session Summary</div>
-          <div style={{ fontSize: 11, color: "var(--text-muted)", fontFamily: "var(--font-mono)" }}>
-            {summary.session_id?.slice(0, 16)}…
+          <div className="card-title" style={{ marginBottom: 0 }}>
+            Session Summary
           </div>
+          <div className="mono muted">{summary.session_id?.slice(0, 16)}...</div>
         </div>
         <RiskBadge label={summary.risk_rating} />
       </div>
 
-      {/* Stats grid */}
       <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
-        <Stat label="Trust"     value={summary.final_trust?.toFixed(1)} accent="var(--navy)" />
-        <Stat label="Actions"   value={m.total_actions ?? 0} />
-        <Stat label="ALLOW"     value={m.allowed        ?? 0} accent="#1D9E75" />
-        <Stat label="CHALLENGE" value={m.challenged      ?? 0} accent="#BA7517" />
-        <Stat label="BLOCK"     value={m.blocked         ?? 0} accent="#A32D2D" />
-        <Stat label="Anomalies" value={m.anomaly_count   ?? 0} accent={m.anomaly_count > 0 ? "#BA7517" : undefined} />
+        <Stat label="Trust" value={summary.final_trust?.toFixed(1)} accent="#102338" />
+        <Stat label="Actions" value={metrics.total_actions ?? 0} />
+        <Stat label="Allow" value={metrics.allowed ?? 0} accent="#0f8b6f" />
+        <Stat label="Challenge" value={metrics.challenged ?? 0} accent="#b66b16" />
+        <Stat label="Block" value={metrics.blocked ?? 0} accent="#b42318" />
+        <Stat label="Anomalies" value={metrics.anomaly_count ?? 0} accent="#b66b16" />
       </div>
 
-      {/* Extra info */}
-      <div style={{ display: "flex", gap: 12, fontSize: 11, color: "var(--text-muted)" }}>
-        <span>⏱ {summary.session_duration_s?.toFixed(0)}s</span>
-        <span>🤖 ML {summary.ml_trained ? "active" : "untrained"}</span>
-        <span>📦 {summary.ml_train_samples ?? 0} training samples</span>
-        {summary.shadow_mode && (
-          <span className="pill pill-shadow" style={{ fontSize: 10 }}>SHADOW</span>
-        )}
+      <div style={{ display: "flex", gap: 10, flexWrap: "wrap" }}>
+        <span className="mono muted">
+          duration: {summary.session_duration_s?.toFixed(0)}s
+        </span>
+        <span className="mono muted">
+          ml: {summary.ml_trained ? "active" : "untrained"}
+        </span>
+        <span className="mono muted">
+          samples: {summary.ml_train_samples ?? 0}
+        </span>
+        {summary.shadow_mode && <span className="pill pill-shadow">SHADOW</span>}
       </div>
 
-      {/* Actions */}
       <div style={{ display: "flex", gap: 8 }}>
         {onRestore && (
           <button className="btn-ghost btn-sm" onClick={onRestore}>
-            ↑ Restore Trust
+            Restore Trust
           </button>
         )}
         {onEnd && (

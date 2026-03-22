@@ -127,6 +127,8 @@ def ewma_update(
     current_value: float,
     new_observation: float,
     decay_factor: float = 0.95,
+    *,
+    decay: Optional[float] = None,
 ) -> float:
     """
     Compute one step of an Exponentially Weighted Moving Average (EWMA).
@@ -139,6 +141,9 @@ def ewma_update(
     follow legitimate behaviour drift over time.
     5.0
     """
+    if decay is not None:
+        decay_factor = decay
+
     if not 0.0 <= decay_factor <= 1.0:
         raise ValueError(
             f"decay_factor must be in [0, 1], got {decay_factor}"
@@ -164,6 +169,20 @@ def ewma_update_vector(
         for c, n in zip(current_vector, new_vector)
     ]
 
+def ewma_vector_update(
+    current_vector: List[float],
+    new_vector: List[float],
+    decay_factor: float = 0.95,
+) -> List[float]:
+    """
+    Backward-compatible alias for ewma_update_vector.
+    """
+    return ewma_update_vector(
+        current_vector,
+        new_vector,
+        decay_factor,
+    )
+
 # 6. GINI IMPURITY
 def gini_impurity(labels: Sequence[int]) -> float:
     """
@@ -183,6 +202,18 @@ def gini_impurity(labels: Sequence[int]) -> float:
     return 1.0 - (p0 * p0 + p1 * p1)
 
 # 7. PROFILE STATISTICS HELPERS
+def safe_divide(
+    numerator: float,
+    denominator: float,
+    default: float = 0.0,
+) -> float:
+    """
+    Divide safely and return default when denominator is zero-ish.
+    """
+    if abs(denominator) < 1e-12:
+        return default
+    return numerator / denominator
+
 def safe_mean(values: Sequence[float], default: float = 0.0) -> float:
     """
     Compute the arithmetic mean, returning `default` for empty sequences.
@@ -202,9 +233,28 @@ def safe_stdev(values: Sequence[float], default: float = 1.0) -> float:
     return max(statistics.stdev(values), 1e-9)
 
 
+def compute_interval_stats(
+    intervals: Sequence[float],
+    default_mean: float = 5.0,
+    default_stdev: float = 3.0,
+) -> Tuple[float, float]:
+    """
+    Compute (mean, stdev) for interval sequences with safe defaults.
+    """
+    if not intervals:
+        return (default_mean, default_stdev)
+
+    mean_val = safe_mean(intervals, default=default_mean)
+    if len(intervals) < 2:
+        return (mean_val, default_stdev)
+
+    stdev_val = safe_stdev(intervals, default=default_stdev)
+    return (mean_val, max(stdev_val, 0.1))
+
+
 def coefficient_of_variation(
     values: Sequence[float],
-    default: float = 1.0,
+    default: float = 0.0,
 ) -> float:
     """
     Compute the coefficient of variation (CV = stdev / mean).
@@ -304,3 +354,16 @@ def l2_normalise(vec: List[float]) -> List[float]:
     if magnitude < 1e-10:
         return vec[:]
     return [v / magnitude for v in vec]
+
+
+def compute_risk_label(trust_score: float) -> str:
+    """
+    Convert trust score to the user-facing risk bucket label.
+    """
+    if trust_score >= 75.0:
+        return "LOW RISK"
+    if trust_score >= 50.0:
+        return "MEDIUM RISK"
+    if trust_score >= 20.0:
+        return "HIGH RISK"
+    return "CRITICAL RISK"

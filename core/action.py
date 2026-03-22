@@ -34,7 +34,9 @@ class UserAction:
         resource_id: str,
         metadata: Optional[Dict[str, Any]] = None,
         *,
-        _timestamp: Optional[float] = None, 
+        session_id: str = "",
+        timestamp: Optional[float] = None,
+        _timestamp: Optional[float] = None,
     ) -> None:
         # Type validation 
         if not isinstance(action_type, str):
@@ -55,6 +57,7 @@ class UserAction:
             )
 
         self.action_type: str = action_type
+        self.session_id: str = str(session_id or "")
 
         # Resource ID hashing
         # Truncate to 16 hex chars (64-bit collision space).
@@ -64,7 +67,8 @@ class UserAction:
         )
 
         # Timestamp
-        self.timestamp: float = _timestamp if _timestamp is not None else time.time()
+        ts = timestamp if timestamp is not None else _timestamp
+        self.timestamp: float = ts if ts is not None else time.time()
         self.metadata: Dict[str, Any] = metadata if metadata is not None else {}
 
     # Numeric encoding
@@ -75,10 +79,13 @@ class UserAction:
         """
         return self._TYPE_INDEX[self.action_type]
 
-    @property
     def is_sensitive(self) -> bool:
-        """True if this action type is in the sensitive set (delete/export/admin/config)."""
+        """True if this action type is sensitive."""
         return self.action_type in self.SENSITIVE_TYPES
+
+    def is_high_risk(self) -> bool:
+        """Backward-compatible high-risk alias."""
+        return self.action_type in {"export", "admin"}
 
     @property
     def is_destructive(self) -> bool:
@@ -99,6 +106,7 @@ class UserAction:
         return {
             "action_type": self.action_type,
             "resource_id": self.resource_id,
+            "session_id":  self.session_id,
             "timestamp":   self.timestamp,
             "metadata":    self.metadata,
         }
@@ -118,9 +126,20 @@ class UserAction:
             )
         obj.action_type = action_type
         obj.resource_id = str(data["resource_id"])  # already hashed
+        obj.session_id  = str(data.get("session_id", ""))
         obj.timestamp   = float(data["timestamp"])
         obj.metadata    = dict(data.get("metadata") or {})
         return obj
+
+    @classmethod
+    def from_index(cls, index: int) -> str:
+        if not 0 <= index < len(cls.ACTION_TYPES):
+            raise IndexError(f"Action type index out of range: {index}")
+        return cls.ACTION_TYPES[index]
+
+    @classmethod
+    def type_count(cls) -> int:
+        return len(cls.ACTION_TYPES)
 
     # Dunder methods 
     def __repr__(self) -> str:
@@ -136,11 +155,19 @@ class UserAction:
         return (
             self.action_type == other.action_type
             and self.resource_id == other.resource_id
+            and self.session_id == other.session_id
             and abs(self.timestamp - other.timestamp) < 1e-6
         )
 
     def __hash__(self) -> int:
-        return hash((self.action_type, self.resource_id, round(self.timestamp, 6)))
+        return hash(
+            (
+                self.action_type,
+                self.resource_id,
+                self.session_id,
+                round(self.timestamp, 6),
+            )
+        )
 
     def __lt__(self, other: "UserAction") -> bool:
         """Allow sorting by timestamp."""

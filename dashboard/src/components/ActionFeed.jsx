@@ -1,78 +1,94 @@
-/**
- * ActionFeed — live scrolling list of evaluated actions with decision badges.
- *
- * Props:
- *   feed          {Array}    DecisionResponse objects, newest first
- *   onSubmit      {Function} (actionType) => void
- *   loading       {boolean}
- */
-
 import { useState } from "react";
 import RiskBadge from "./RiskBadge.jsx";
 
-const ACTION_TYPES = ["login","read","write","delete","search","export","config","admin"];
+const ACTION_TYPES = [
+  "login",
+  "read",
+  "write",
+  "delete",
+  "search",
+  "export",
+  "config",
+  "admin",
+];
 
-function decisionStyle(decision) {
-  if (decision === "ALLOW")     return { borderLeft: "3px solid #1D9E75" };
-  if (decision === "CHALLENGE") return { borderLeft: "3px solid #BA7517" };
-  if (decision === "BLOCK")     return { borderLeft: "3px solid #A32D2D" };
-  return {};
+function decisionAccent(decision) {
+  if (decision === "ALLOW") return "#0f8b6f";
+  if (decision === "CHALLENGE") return "#b66b16";
+  if (decision === "BLOCK") return "#b42318";
+  return "#98a2b3";
 }
 
 function FeedRow({ item }) {
   const [expanded, setExpanded] = useState(false);
-  const hasAnomalies = item.anomalies?.length > 0;
+  const hasAnomalies = (item.anomalies || []).length > 0;
+  const accent = decisionAccent(item.decision);
 
   return (
     <div
       style={{
-        padding: "8px 10px",
-        fontSize: "12px",
-        borderRadius: "var(--radius-sm)",
-        background: "#FAFAF8",
-        marginBottom: 4,
+        padding: "9px 10px",
+        borderRadius: "8px",
+        border: "1px solid #e3e7ec",
+        background: "#fbfcfd",
+        marginBottom: 6,
         cursor: hasAnomalies ? "pointer" : "default",
-        ...decisionStyle(item.decision),
       }}
-      onClick={() => hasAnomalies && setExpanded(e => !e)}
+      onClick={() => hasAnomalies && setExpanded((v) => !v)}
     >
-      <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
-        {/* Left: action type + trust */}
+      <div
+        style={{
+          display: "flex",
+          justifyContent: "space-between",
+          alignItems: "center",
+          gap: 8,
+        }}
+      >
         <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
-          <span style={{ fontWeight: 600, textTransform: "uppercase", fontSize: 11 }}>
+          <span
+            className="mono"
+            style={{
+              fontWeight: 700,
+              fontSize: 11,
+              color: accent,
+              textTransform: "uppercase",
+            }}
+          >
             {item.action_type}
           </span>
-          <span style={{ color: "var(--text-muted)" }}>
+          <span className="muted">
             trust <strong>{item.trust_score?.toFixed(1)}</strong>
           </span>
           {item.bot_prob > 0.01 && (
-            <span style={{ color: "#1D9E75", fontSize: 11 }}>
-              P(bot) {(item.bot_prob * 100).toFixed(1)}%
+            <span className="mono muted">
+              p(bot) {(item.bot_prob * 100).toFixed(1)}%
             </span>
           )}
         </div>
-
-        {/* Right: decision badge + expand hint */}
         <div style={{ display: "flex", alignItems: "center", gap: 6 }}>
           <RiskBadge label={item.decision} size="sm" />
           {hasAnomalies && (
-            <span style={{ color: "#BA7517", fontSize: 10 }}>
-              {expanded ? "▲" : "▼"} {item.anomalies.length}
-            </span>
+            <span className="mono muted">{expanded ? "hide" : "view"}</span>
           )}
         </div>
       </div>
 
-      {/* Anomaly detail */}
       {expanded && hasAnomalies && (
-        <div style={{ marginTop: 6, display: "flex", flexWrap: "wrap", gap: 4 }}>
-          {item.anomalies.map((a, i) => (
-            <span key={i} style={{
-              background: "#FCEBEB", color: "#A32D2D",
-              fontSize: 10, padding: "1px 6px",
-              borderRadius: 99, fontFamily: "var(--font-mono)",
-            }}>
-              {a}
+        <div style={{ display: "flex", flexWrap: "wrap", gap: 5, marginTop: 8 }}>
+          {item.anomalies.map((anomaly, idx) => (
+            <span
+              key={`${anomaly}-${idx}`}
+              className="mono"
+              style={{
+                background: "#fdecec",
+                color: "#b42318",
+                border: "1px solid #f8d1d1",
+                borderRadius: 999,
+                padding: "2px 7px",
+                fontSize: 10,
+              }}
+            >
+              {anomaly}
             </span>
           ))}
         </div>
@@ -85,18 +101,15 @@ export default function ActionFeed({ feed = [], onSubmit, loading = false }) {
   const [selected, setSelected] = useState("read");
 
   return (
-    <div className="card flex-col" style={{ gap: 10 }}>
+    <div className="card" style={{ display: "flex", flexDirection: "column", gap: 10 }}>
       <div className="card-title">Live Action Feed</div>
 
-      {/* Action submission */}
       <div style={{ display: "flex", gap: 8 }}>
-        <select
-          value={selected}
-          onChange={e => setSelected(e.target.value)}
-          style={{ flex: 1 }}
-        >
-          {ACTION_TYPES.map(t => (
-            <option key={t} value={t}>{t}</option>
+        <select value={selected} onChange={(e) => setSelected(e.target.value)}>
+          {ACTION_TYPES.map((actionType) => (
+            <option key={actionType} value={actionType}>
+              {actionType}
+            </option>
           ))}
         </select>
         <button
@@ -104,23 +117,20 @@ export default function ActionFeed({ feed = [], onSubmit, loading = false }) {
           onClick={() => onSubmit?.(selected)}
           disabled={loading || !onSubmit}
         >
-          {loading ? <span className="spinner" style={{ width:14, height:14 }} /> : "Evaluate"}
+          {loading ? <span className="spinner" /> : "Evaluate"}
         </button>
       </div>
 
-      {/* Feed list */}
-      <div className="scroll-y" style={{ maxHeight: 320 }}>
+      <div className="scroll-y" style={{ maxHeight: 330 }}>
         {feed.length === 0 ? (
-          <p style={{ color: "var(--text-muted)", fontSize: 12, padding: "8px 0" }}>
-            No actions yet.
-          </p>
+          <p className="muted">No actions yet.</p>
         ) : (
-          feed.map((item, i) => <FeedRow key={i} item={item} />)
+          feed.map((item, idx) => <FeedRow key={idx} item={item} />)
         )}
       </div>
 
-      <div style={{ fontSize: 11, color: "var(--text-muted)" }}>
-        {feed.length} evaluation{feed.length !== 1 ? "s" : ""} · click flagged rows to see anomalies
+      <div className="muted mono">
+        {feed.length} evaluation{feed.length === 1 ? "" : "s"}
       </div>
     </div>
   );

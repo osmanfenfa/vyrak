@@ -7,14 +7,47 @@ import math
 import os
 import pickle
 import time
+from collections import deque
+from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
+from coldstart.ramp_manager import RampUpManager
+from core.action import UserAction
 from core.constants import (
+    ANOMALY_DUAL_SIGNAL_ESCALATION,
+    ANOMALY_HIGH_ENTROPY,
+    ANOMALY_LOW_SIMILARITY,
+    ANOMALY_ML_BOT_DETECTED,
+    ANOMALY_TEMPORAL_DRIFT,
+    BEHAVIOR_WINDOW_SIZE,
+    COSINE_MODERATE_THRESHOLD,
+    DECISION_ALLOW,
+    DECISION_BLOCK,
+    DECISION_CHALLENGE,
+    ENTROPY_HIGH_THRESHOLD,
+    ENTROPY_MIN_WINDOW,
     ML_FEATURE_DIM,
     ML_BOT_CONFIDENCE_THRESH,
     ML_MIN_TRAIN_SAMPLES,
+    TEMPORAL_ZSCORE_LIMIT,
+    TRUST_BLOCK_THRESHOLD,
+    TRUST_CHALLENGE_THRESHOLD,
+    TRUST_DECAY_AI_BOT,
+    TRUST_DECAY_MILD,
+    TRUST_DECAY_MODERATE,
+    TRUST_DECAY_SEVERE,
+    TRUST_INITIAL,
+    TRUST_RECOVERY_RATE,
 )
 from core.features import FeatureExtractor
+from core.math_utils import (
+    build_live_vector,
+    compute_risk_label,
+    cosine_similarity,
+    shannon_entropy,
+    temporal_zscore,
+)
+from core.profile import BehavioralProfile
 
 logger = logging.getLogger(__name__)
 
@@ -355,3 +388,234 @@ class HoeffdingTreeClassifier:
             f"grace_period={self.grace_period}, "
             f"{status})"
         )
+
+
+@dataclass
+class DecisionResult:
+    """
+    Per-action evaluation output from ABSAv2Engine.
+    """
+
+    decision: str
+    trust_score: float
+    bot_prob: float
+    similarity: float
+    entropy: float
+    temporal_z: float
+    anomalies: List[str] = field(default_factory=list)
+    ramp_active: bool = False
+    action_type: str = "read"
+    timestamp: float = 0.0
+
+    def is_flagged(self) -> bool:
+        return bool(self.anomalies)
+
+    def to_dict(self) -> Dict[str, Any]:
+        return {
+            "decision": self.decision,
+            "trust_score": self.trust_score,
+            "bot_prob": self.bot_prob,
+            "similarity": self.similarity,
+            "entropy": self.entropy,
+            "temporal_z": self.temporal_z,
+            "anomalies": list(self.anomalies),
+            "ramp_active": self.ramp_active,
+            "action_type": self.action_type,
+            "timestamp": self.timestamp,
+        }
+
+
+class ABSAv2Engine:
+    """
+    Minimal, production-safe ABSA evaluation engine used by the API layer.
+    """
+
+    def __init__(
+        self,
+        profile: BehavioralProfile,
+        classifier: Optional[Any] = None,
+        session_id: str = "",
+        shadow_mode: bool = False,
+    ) -> None:
+        self.profile = profile
+        self.classifier = classifier
+        self.session_id = session_id or ""
+        self.shadow_mode = shadow_mode
+
+        self.trust_score: float = TRUST_INITIAL
+        self.action_window: deque = deque(maxlen=BEHAVIOR_WINDOW_SIZE)
+        self.result_history: List[DecisionResult] = []
+        self.decision_log: List[str] = []
+        self.anomaly_log: List[Dict[str, Any]] = []
+
+        self._last_action_ts: Optional[float] = None
+        self._started_at: float = time.time()
+        self._ramp = RampUpManager()
+
+    def evaluate_action(self, action: UserAction) -> DecisionResult:
+        """
+        Evaluate one action and update trust + profile state.
+        """
+        self.action_window.append(action)
+        action_count = self.profile.vector_count
+        ramp_active = self._ramp.is_warming_up(action_count)
+        cosine_enabled = self._ramp.cosine_check_enabled(action_count)
+
+        similarity = self._compute_similarity(cosine_enabled)
+        entropy = shannon_entropy([a.action_type for a in self.action_window])
+        temporal_z = self._compute_temporal_z(action, action_count)
+        bot_prob = self._compute_bot_prob()
+
+        ml_thresh = self._ramp.get_ml_threshold(action_count)
+        temporal_limit = self._ramp.get_temporal_limit(action_count)
+        sim_thresh = self.profile.adaptive_threshold
+
+        anomalies: List[str] = []
+        if cosine_enabled and similarity < sim_thresh:
+            anomalies.append(ANOMALY_LOW_SIMILARITY)
+        if len(self.action_window) >= ENTROPY_MIN_WINDOW:
+            if entropy > ENTROPY_HIGH_THRESHOLD:
+                anomalies.append(ANOMALY_HIGH_ENTROPY)
+        if temporal_z > temporal_limit:
+            anomalies.append(ANOMALY_TEMPORAL_DRIFT)
+        if bot_prob >= ml_thresh:
+            anomalies.append(ANOMALY_ML_BOT_DETECTED)
+        if len(anomalies) >= 2:
+            anomalies.append(ANOMALY_DUAL_SIGNAL_ESCALATION)
+
+        self._apply_trust_update(action, anomalies, similarity, bot_prob, ml_thresh)
+        decision = self._compute_decision()
+        if self.shadow_mode:
+            decision = DECISION_ALLOW
+
+        result = DecisionResult(
+            decision=decision,
+            trust_score=round(self.trust_score, 3),
+            bot_prob=max(0.0, min(1.0, float(bot_prob))),
+            similarity=max(0.0, min(1.0, float(similarity))),
+            entropy=max(0.0, min(1.0, float(entropy))),
+            temporal_z=max(0.0, float(temporal_z)),
+            anomalies=anomalies,
+            ramp_active=ramp_active,
+            action_type=action.action_type,
+            timestamp=action.timestamp,
+        )
+        self.result_history.append(result)
+        self.decision_log.append(result.decision)
+        if anomalies:
+            self.anomaly_log.append(
+                {
+                    "action_type": action.action_type,
+                    "timestamp": action.timestamp,
+                    "trust_score": result.trust_score,
+                    "anomalies": anomalies,
+                    "bot_prob": result.bot_prob,
+                    "decision": result.decision,
+                }
+            )
+
+        self._last_action_ts = action.timestamp
+        return result
+
+    def restore_trust(self, increment: float = 20.0) -> None:
+        self.trust_score = min(100.0, self.trust_score + max(0.0, increment))
+
+    def get_session_summary(self) -> Dict[str, Any]:
+        total = len(self.result_history)
+        allowed = self.decision_log.count(DECISION_ALLOW)
+        challenged = self.decision_log.count(DECISION_CHALLENGE)
+        blocked = self.decision_log.count(DECISION_BLOCK)
+
+        top_features: List[Tuple[str, float]] = []
+        if self.classifier and hasattr(self.classifier, "get_top_features"):
+            try:
+                top_features = list(self.classifier.get_top_features(5))
+            except Exception:
+                top_features = []
+
+        ml_trained = bool(getattr(self.classifier, "is_trained", False))
+        ml_samples = int(getattr(self.classifier, "n_samples", 0) or 0)
+
+        return {
+            "total_actions": total,
+            "allowed": allowed,
+            "challenged": challenged,
+            "blocked": blocked,
+            "anomaly_count": len(self.anomaly_log),
+            "final_trust": round(self.trust_score, 2),
+            "risk_rating": compute_risk_label(self.trust_score),
+            "ml_trained": ml_trained,
+            "ml_train_samples": ml_samples,
+            "top_features": top_features,
+            "session_duration_s": max(0.0, time.time() - self._started_at),
+            "shadow_mode": bool(self.shadow_mode),
+            "anomaly_log": list(self.anomaly_log),
+        }
+
+    def _compute_decision(self) -> str:
+        if self.trust_score <= TRUST_BLOCK_THRESHOLD:
+            return DECISION_BLOCK
+        if self.trust_score <= TRUST_CHALLENGE_THRESHOLD:
+            return DECISION_CHALLENGE
+        return DECISION_ALLOW
+
+    def _compute_similarity(self, cosine_enabled: bool) -> float:
+        if not cosine_enabled:
+            return 1.0
+        profile_vec = self.profile.get_mean_vector()
+        live_vec = build_live_vector(
+            list(self.action_window),
+            num_types=UserAction.type_count(),
+        )
+        return cosine_similarity(live_vec, profile_vec)
+
+    def _compute_temporal_z(self, action: UserAction, action_count: int) -> float:
+        if self._last_action_ts is None:
+            return 0.0
+        interval = max(0.0, action.timestamp - self._last_action_ts)
+        mean_iv, std_iv = self.profile.get_timing_stats()
+        base_limit = self._ramp.get_temporal_limit(action_count)
+        z = temporal_zscore(interval, mean_iv, std_iv)
+        return z if base_limit >= TEMPORAL_ZSCORE_LIMIT else max(0.0, z)
+
+    def _compute_bot_prob(self) -> float:
+        if not self.classifier:
+            return 0.0
+        if not getattr(self.classifier, "is_trained", False):
+            return 0.0
+        try:
+            features = FeatureExtractor.extract(
+                list(self.action_window),
+                profile_intervals=self.profile.get_recent_intervals(20),
+            )
+            return float(self.classifier.predict_proba(features))
+        except Exception:
+            return 0.0
+
+    def _apply_trust_update(
+        self,
+        action: UserAction,
+        anomalies: List[str],
+        similarity: float,
+        bot_prob: float,
+        ml_thresh: float,
+    ) -> None:
+        if anomalies:
+            decay = TRUST_DECAY_MILD
+            if ANOMALY_LOW_SIMILARITY in anomalies:
+                if similarity < COSINE_MODERATE_THRESHOLD:
+                    decay = max(decay, TRUST_DECAY_SEVERE)
+                else:
+                    decay = max(decay, TRUST_DECAY_MODERATE)
+            if ANOMALY_ML_BOT_DETECTED in anomalies or bot_prob >= ml_thresh:
+                decay = max(decay, TRUST_DECAY_AI_BOT)
+            if len(anomalies) >= 2:
+                decay = max(decay, TRUST_DECAY_MODERATE)
+            if action.is_sensitive():
+                decay = max(decay, TRUST_DECAY_MODERATE)
+            self.trust_score = max(0.0, self.trust_score - decay)
+            return
+
+        recovery = self._ramp.get_trust_recovery_rate(self.profile.vector_count)
+        self.trust_score = min(100.0, self.trust_score + max(recovery, TRUST_RECOVERY_RATE))
+        self.profile.record_action(action)

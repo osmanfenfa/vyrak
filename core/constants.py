@@ -33,6 +33,14 @@ def _bool(key: str, default: bool) -> bool:
         return default
     return raw in ("true", "1", "yes")
 
+def _str(key: str, default: str) -> str:
+    """Read a string from environment, fall back to default."""
+    raw = os.environ.get(key, "")
+    return raw.strip() if raw.strip() else default
+
+LOG_LEVEL: Final[str] = _str("LOG_LEVEL", "INFO").upper()
+SHADOW_MODE_ENABLED: Final[bool] = _bool("SHADOW_MODE_ENABLED", False)
+
 # TRUST SCORE DYNAMICS
 
 TRUST_INITIAL: Final[float] = _float("TRUST_INITIAL", 100.0)
@@ -74,6 +82,11 @@ Normalised Shannon entropy threshold above which HIGH_ENTROPY fires.
 ENTROPY_MIN_WINDOW: Final[int] = _int("ENTROPY_MIN_WINDOW", 10)
 """
 Minimum window size before the entropy check is applied.
+"""
+
+ENTROPY_BIN_COUNT: Final[int] = _int("ENTROPY_BIN_COUNT", 8)
+"""
+Number of bins used when estimating action entropy in feature extraction.
 """
 
 COSINE_MODERATE_THRESHOLD: Final[float] = _float("COSINE_MODERATE_THRESHOLD", 0.5)
@@ -137,6 +150,11 @@ ML_CONFIDENCE_GATE_LOW: Final[float] = _float("ML_CONFIDENCE_GATE_LOW", 0.10)
 Auto-labeling confidence gate — lower bound.
 """
 
+CANARY_TRAFFIC_PERCENT: Final[int] = _int("CANARY_TRAFFIC_PERCENT", 10)
+"""
+Percent of sessions routed to a canary model when one is active.
+"""
+
 ML_WARM_START_HALF_WINDOW: Final[int] = _int("ML_WARM_START_HALF_WINDOW", 10)
 """
 Minimum window fill before ML inference is activated.
@@ -166,6 +184,30 @@ ML bot confidence threshold used during the cold start ramp-up period.
 this period.
 """
 
+COLD_START_ML_THRESH: Final[float] = _float(
+    "COLD_START_ML_THRESH",
+    COLD_START_LOOSE_THRESH,
+)
+"""
+Legacy alias for the cold-start ML threshold.
+"""
+
+COLD_START_TEMPORAL_LIMIT: Final[float] = _float(
+    "COLD_START_TEMPORAL_LIMIT",
+    4.5,
+)
+"""
+Loose temporal z-score limit used during cold-start ramp-up.
+"""
+
+COLD_START_RECOVERY_RATE: Final[float] = _float(
+    "COLD_START_RECOVERY_RATE",
+    max(TRUST_RECOVERY_RATE * 2, TRUST_RECOVERY_RATE),
+)
+"""
+Trust recovery rate used during cold-start ramp-up.
+"""
+
 ADAPTIVE_THRESHOLD_MIN: Final[float] = _float("ADAPTIVE_THRESHOLD_MIN", 0.65)
 """
 Lower bound for the per-user adaptive similarity threshold.
@@ -175,6 +217,9 @@ ADAPTIVE_THRESHOLD_MAX: Final[float] = _float("ADAPTIVE_THRESHOLD_MAX", 0.85)
 """
 Upper bound for the per-user adaptive similarity threshold.
 """
+
+SIMILARITY_ADAPTIVE_MIN: Final[float] = ADAPTIVE_THRESHOLD_MIN
+SIMILARITY_ADAPTIVE_MAX: Final[float] = ADAPTIVE_THRESHOLD_MAX
 
 ADAPTIVE_THRESHOLD_RECOMPUTE_INTERVAL: Final[int] = _int(
     "ADAPTIVE_THRESHOLD_RECOMPUTE_INTERVAL", 50
@@ -226,6 +271,11 @@ DEFAULT_TIMING_STDEV: Final[float] = _float("DEFAULT_TIMING_STDEV", 3.0)
 Default standard deviation of inter-action intervals used when a profile
 has fewer than 2 recorded intervals.
 """
+
+TEMPORAL_DEFAULT_MEAN: Final[float] = DEFAULT_TIMING_MEAN
+TEMPORAL_DEFAULT_STDEV: Final[float] = DEFAULT_TIMING_STDEV
+
+EWMA_MIN_OBSERVATIONS: Final[int] = _int("EWMA_MIN_OBSERVATIONS", 20)
 
 # DECISION LABELS  (string constants used in response dicts)
 

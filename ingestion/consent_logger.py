@@ -43,7 +43,7 @@ import hashlib
 import logging
 import time
 from dataclasses import dataclass, field
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, Tuple
 
 from core.action import UserAction
 from core.engine import ABSAv2Engine, DecisionResult

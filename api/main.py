@@ -279,20 +279,16 @@ def create_app() -> FastAPI:
             "Continuous session authentication API. Evaluates every user action "
             "against a learned behavioural profile to detect bot activity, "
             "session hijacking, and AI mimics in real time.\n\n"
-            "**Developed by Vyrak**"
+            "**Developed by Osman Fenfaquee's Vyrak**"
         ),
-        version     = "2.0.0",
+        version     = "1.0.0",
         docs_url    = "/docs",
         redoc_url   = "/redoc",
         openapi_url = "/openapi.json",
         lifespan    = lifespan,
-        license_info = {
-            "name": "MIT License",
-            "url":  "https://opensource.org/licenses/MIT",
-        },
         contact = {
             "name":  "Vyrak",
-            "email": "security@zelvryn.internal",
+            "email": "osmantfenfaquee@gmail.com",
         },
     )
 
