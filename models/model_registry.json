@@ -1,0 +1,26 @@
+{
+  "_comment": "Zelvryn model registry \u2014 managed by ml/registry.py.",
+  "_system": "Zelvryn \u2014 Adaptive Behavioral Signature Authentication",
+  "_author": "Vyrak",
+  "active_version": "rf_v1",
+  "canary_version": null,
+  "canary_traffic_percent": 5,
+  "saved_at": 1774195600.6675217,
+  "versions": {
+    "rf_v1": {
+      "version": "rf_v1",
+      "model_path": "models/rf_v1.joblib",
+      "state": "active",
+      "n_samples": 200,
+      "n_human": 100,
+      "n_bot": 100,
+      "cv_f1": 1.0,
+      "cv_far": 0.0,
+      "cv_frr": 0.0,
+      "trained_at": 1774195600.6675296,
+      "promoted_at": 1774195600.6675298,
+      "retired_at": null,
+      "notes": "Bootstrapped from synthetic data. Retrain with real shadow data."
+    }
+  }
+}
