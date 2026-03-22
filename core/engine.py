@@ -1,46 +1,5 @@
 """
-zelvryn/core/hoeffding.py
-=========================
 HoeffdingTreeClassifier — incremental online learning for Zelvryn.
-
-The Hoeffding Tree (also known as VFDT — Very Fast Decision Tree) is a decision
-tree algorithm that learns incrementally: it processes one sample at a time, in
-constant memory, without needing access to previously seen data.
-
-When to use this instead of RandomForestClassifier
---------------------------------------------------
-  Use HoeffdingTreeClassifier when:
-    - Retraining latency is critical (batch RF rebuild takes 5-30 seconds;
-      Hoeffding update takes microseconds)
-    - Memory is constrained (no stored dataset required)
-    - The data stream is extremely large (millions of sessions per hour)
-
-  Use RandomForestClassifier when:
-    - Detection accuracy is the top priority
-    - Retraining can be scheduled (background worker, off-peak)
-    - A held-out validation set is available for cross-validation
-
-  Both classifiers expose exactly the same interface (fit, predict_proba,
-  predict, save_model, load_model) so swapping them in ABSAv2Engine requires
-  changing only the instantiation line.
-
-Hoeffding bound
---------------
-The Hoeffding Tree uses the Hoeffding bound (also called the additive
-Chernoff bound) to decide when a split is statistically reliable:
-  ε = sqrt( R² * ln(1/δ) / (2n) )
-  where:
-    R = range of the splitting criterion (1.0 for Gini or information gain)
-    δ = confidence parameter (how often we can be wrong about a split)
-    n = number of samples seen at this node
-
-A split is performed when the difference in criterion between the best and
-second-best split attributes is larger than ε. This guarantees that only
-statistically sound splits are made.
-
-Author : Vyrak
-System : Zelvryn — Adaptive Behavioral Signature Authentication
-Version: 2.0
 """
 
 import logging
@@ -50,7 +9,6 @@ import pickle
 import time
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
-
 from core.constants import (
     ML_FEATURE_DIM,
     ML_BOT_CONFIDENCE_THRESH,
@@ -64,39 +22,6 @@ logger = logging.getLogger(__name__)
 class HoeffdingTreeClassifier:
     """
     Incremental online Hoeffding Tree classifier for human vs bot detection.
-
-    Wraps the river library's HoeffdingTreeClassifier with the same interface
-    as core.classifier.RandomForestClassifier, enabling drop-in substitution
-    in ABSAv2Engine.
-
-    When river is not installed, falls back to a simple Naive Bayes classifier
-    implemented from scratch to ensure the module always loads.
-
-    Parameters
-    ----------
-    grace_period : int, optional
-        Number of instances a leaf must observe before being allowed to split.
-        Higher values make the tree more conservative. Default 200.
-    split_confidence : float, optional
-        Desired error probability for a split decision (Hoeffding δ parameter).
-        Lower values require more evidence before splitting. Default 1e-7.
-    tie_threshold : float, optional
-        Threshold below which a split is considered a tie and deferred.
-        Prevents premature splits on nearly-equal attributes. Default 0.05.
-    leaf_prediction : str, optional
-        Prediction strategy at leaves: 'mc' (majority class), 'nb' (Naive Bayes),
-        'nba' (Naive Bayes adaptive). Default 'nba' (adaptive — switches between
-        mc and nb based on which performs better).
-
-    Attributes
-    ----------
-    is_trained : bool
-        True after the first learn_one() call.
-    n_samples : int
-        Total samples processed.
-    training_timestamp : float or None
-    feature_importances_ : list of float
-        Not supported for Hoeffding Trees; always empty.
     """
 
     def __init__(
@@ -130,10 +55,7 @@ class HoeffdingTreeClassifier:
             1: [0.0] * ML_FEATURE_DIM,
         }
 
-    # ─────────────────────────────────────────────────────────────────────────
     # RIVER DETECTION
-    # ─────────────────────────────────────────────────────────────────────────
-
     def _try_import_river(self) -> bool:
         """
         Attempt to import river. Returns True if successful, False otherwise.
@@ -150,24 +72,10 @@ class HoeffdingTreeClassifier:
             )
             return False
 
-    # ─────────────────────────────────────────────────────────────────────────
     # ONLINE LEARNING INTERFACE
-    # ─────────────────────────────────────────────────────────────────────────
-
     def learn_one(self, features: List[float], label: int) -> None:
         """
         Update the model with a single labeled example.
-
-        This is the core incremental learning method. Unlike fit() which
-        rebuilds from scratch, learn_one() updates the existing model in
-        O(tree_depth) time — typically microseconds.
-
-        Parameters
-        ----------
-        features : list of float
-            20-dimensional feature vector.
-        label : int
-            0 (human) or 1 (bot).
         """
         if len(features) != ML_FEATURE_DIM:
             raise ValueError(
@@ -188,16 +96,6 @@ class HoeffdingTreeClassifier:
     def predict_proba_one(self, features: List[float]) -> float:
         """
         Return P(bot) for a single feature vector using the current model state.
-
-        Parameters
-        ----------
-        features : list of float
-            20-dimensional feature vector.
-
-        Returns
-        -------
-        float
-            P(bot) in [0.0, 1.0]. Returns 0.0 if model has not seen any data.
         """
         if not self.is_trained:
             return 0.0
@@ -207,10 +105,7 @@ class HoeffdingTreeClassifier:
         else:
             return self._nb_predict_proba_one(features)
 
-    # ─────────────────────────────────────────────────────────────────────────
     # BATCH INTERFACE (matches RandomForestClassifier API)
-    # ─────────────────────────────────────────────────────────────────────────
-
     def fit(
         self,
         X: List[List[float]],
@@ -218,18 +113,6 @@ class HoeffdingTreeClassifier:
     ) -> "HoeffdingTreeClassifier":
         """
         Train from a batch of samples by calling learn_one() for each.
-
-        Matches the interface of RandomForestClassifier.fit() for compatibility
-        with code that does not distinguish between the two classifiers.
-
-        Parameters
-        ----------
-        X : list of list of float
-        y : list of int
-
-        Returns
-        -------
-        self
         """
         if len(X) < ML_MIN_TRAIN_SAMPLES:
             raise ValueError(
@@ -284,25 +167,10 @@ class HoeffdingTreeClassifier:
         equal = 1.0 / ML_FEATURE_DIM
         return {name: equal for name in names}
 
-    # ─────────────────────────────────────────────────────────────────────────
     # PERSISTENCE
-    # ─────────────────────────────────────────────────────────────────────────
-
     def save_model(self, path: str) -> None:
         """
         Persist the Hoeffding Tree model to disk.
-
-        Uses pickle (river models do not support joblib well).
-
-        Parameters
-        ----------
-        path : str
-            File path (typically models/hoeffding_v*.pkl).
-
-        Raises
-        ------
-        RuntimeError
-            If the model has not received any training samples yet.
         """
         if not self.is_trained:
             raise RuntimeError("Cannot save an untrained model. Call learn_one() first.")
@@ -333,14 +201,6 @@ class HoeffdingTreeClassifier:
     def load_model(cls, path: str) -> "HoeffdingTreeClassifier":
         """
         Load a persisted Hoeffding Tree model from disk.
-
-        Parameters
-        ----------
-        path : str
-
-        Returns
-        -------
-        HoeffdingTreeClassifier
         """
         if not os.path.exists(path):
             raise FileNotFoundError(f"Model file not found: {path}")
@@ -372,11 +232,8 @@ class HoeffdingTreeClassifier:
             path, instance.n_samples
         )
         return instance
-
-    # ─────────────────────────────────────────────────────────────────────────
+    
     # RIVER BACKEND
-    # ─────────────────────────────────────────────────────────────────────────
-
     def _river_learn_one(self, features: List[float], label: int) -> None:
         """Internal: update via river HoeffdingTreeClassifier."""
         if self._model is None:
@@ -421,13 +278,6 @@ class HoeffdingTreeClassifier:
     def _nb_learn_one(self, features: List[float], label: int) -> None:
         """
         Update Gaussian Naive Bayes statistics with one sample.
-
-        Maintains running sums and sum-of-squares for each (class, feature)
-        pair to enable online mean and variance estimation.
-
-        P(x_i | class=c) = Normal(μ_{c,i}, σ²_{c,i})
-          μ_{c,i}  = sum_c[i] / count_c
-          σ²_{c,i} = sq_sum_c[i] / count_c - μ_{c,i}²
         """
         if label not in (0, 1):
             return
@@ -491,9 +341,7 @@ class HoeffdingTreeClassifier:
 
         return min(1.0, max(0.0, p_bot / denom))
 
-    # ─────────────────────────────────────────────────────────────────────────
     # Dunder methods
-    # ─────────────────────────────────────────────────────────────────────────
 
     def __repr__(self) -> str:
         backend = "river" if self._use_river else "NaiveBayes"
