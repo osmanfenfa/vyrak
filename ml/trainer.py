@@ -1,37 +1,6 @@
 """
-zelvryn/ml/trainer.py
-======================
 ModelTrainer — trains, validates, and persists the Random Forest classifier
 that powers Zelvryn's ML-based anomaly detection.
-
-Responsibilities
-----------------
-  1. Train a RandomForestClassifier on labeled (X, y) feature datasets
-  2. Run stratified k-fold cross-validation to produce reliable metric estimates
-  3. Save trained models to disk (joblib) and register them in the ModelRegistry
-  4. Manage the retraining schedule: trigger retraining after N new labeled
-     samples have accumulated in the FeatureStore
-  5. Log all training events with metrics for audit and debugging
-
-Training data sources
----------------------
-  The trainer draws from three sources, merged before each training run:
-    a) Shadow session exports (data/shadow_exports/) — real human and flagged
-       bot sessions from production observation
-    b) Attack corpus features (data/processed/) — CICIDS2018, CTU-13
-    c) Profile-level training data (BehavioralProfile.ml_training_data) —
-       accumulated heuristic labels from live sessions
-
-Class balance
--------------
-The training dataset is class-balanced by default (equal human/bot samples)
-to prevent the classifier from becoming biased toward the majority class.
-The `class_weight="balanced"` parameter in sklearn's RF also handles this
-within each tree, providing a second layer of imbalance correction.
-
-Author : Vyrak
-System : Zelvryn — Adaptive Behavioral Signature Authentication
-Version: 2.0
 """
 
 import json
@@ -60,33 +29,6 @@ logger = logging.getLogger(__name__)
 class TrainingResult:
     """
     Result of a single model training run.
-
-    Attributes
-    ----------
-    version : str
-        Version string assigned to this trained model (e.g., "rf_v3").
-    model_path : str
-        Path to the saved .joblib file.
-    n_samples : int
-        Total training samples used.
-    n_human : int
-        Human-class samples.
-    n_bot : int
-        Bot-class samples.
-    training_duration_s : float
-        Wall-clock seconds for the training call.
-    cv_metrics : dict
-        Cross-validation metrics: precision, recall, f1, accuracy, far, frr.
-    feature_importances : dict
-        {feature_name: importance_score} after permutation importance.
-    top_features : list of tuple
-        Top 5 (feature_name, importance) pairs.
-    trained_at : float
-        Unix timestamp of training completion.
-    success : bool
-        True if training completed without error.
-    error : str or None
-        Error message if training failed.
     """
     version:              str
     model_path:           str                  = ""
@@ -134,24 +76,6 @@ class TrainingResult:
 class ModelTrainer:
     """
     Trains and manages Zelvryn's Random Forest classifier.
-
-    Parameters
-    ----------
-    model_dir : str, optional
-        Directory where trained model files are saved. Default "models/".
-    n_trees : int, optional
-        Number of trees in each Random Forest. Default ML_NUM_TREES.
-    max_depth : int, optional
-        Maximum tree depth. Default ML_MAX_DEPTH.
-    cv_folds : int, optional
-        Number of folds for cross-validation. Default 5.
-    balance_classes : bool, optional
-        If True, downsample the majority class to match the minority class
-        before training. Default True.
-    random_seed : int, optional
-        Random seed for reproducibility. Default 42.
-    min_train_samples : int, optional
-        Minimum samples required to start training. Default ML_MIN_TRAIN_SAMPLES.
     """
 
     def __init__(
@@ -182,9 +106,7 @@ class ModelTrainer:
             model_dir, n_trees, max_depth, cv_folds
         )
 
-    # ─────────────────────────────────────────────────────────────────────────
     # PRIMARY INTERFACE
-    # ─────────────────────────────────────────────────────────────────────────
 
     def train(
         self,
@@ -195,31 +117,6 @@ class ModelTrainer:
     ) -> TrainingResult:
         """
         Train a new Random Forest on the provided labeled dataset.
-
-        Steps:
-          1. Validate input size and class distribution
-          2. Optionally balance classes
-          3. Fit the RandomForestClassifier
-          4. Run cross-validation (if run_cv=True)
-          5. Save model to disk
-          6. Return TrainingResult with all metrics
-
-        Parameters
-        ----------
-        X : list of list of float
-            Feature matrix. Each row is a 20-dim feature vector.
-        y : list of int
-            Labels: 0 = human, 1 = bot.
-        version_tag : str, optional
-            Custom version string (e.g., "rf_v5_post_shadow"). If None,
-            auto-increments (rf_v1, rf_v2, ...).
-        run_cv : bool, optional
-            Whether to run cross-validation. Default True. Set False for
-            rapid iteration during development.
-
-        Returns
-        -------
-        TrainingResult
         """
         version = version_tag or self._next_version()
         t_start = time.time()
@@ -229,7 +126,7 @@ class ModelTrainer:
             version, len(X), y.count(0), y.count(1)
         )
 
-        # ── Validation ────────────────────────────────────────────────────
+        # Validation
         validation_error = self._validate_dataset(X, y)
         if validation_error:
             logger.error("Training aborted: %s", validation_error)
@@ -237,7 +134,7 @@ class ModelTrainer:
                 version=version, success=False, error=validation_error
             )
 
-        # ── Class balancing ───────────────────────────────────────────────
+        # Class balancing
         if self.balance_classes:
             X, y = self._balance_classes(X, y)
             logger.info(
@@ -245,7 +142,7 @@ class ModelTrainer:
                 len(X), y.count(0), y.count(1)
             )
 
-        # ── Cross-validation ──────────────────────────────────────────────
+        # Cross-validation
         cv_metrics: Dict[str, float] = {}
         if run_cv and len(X) >= self.cv_folds * 4:
             logger.info("Running %d-fold cross-validation...", self.cv_folds)
@@ -267,7 +164,7 @@ class ModelTrainer:
             except Exception as e:
                 logger.warning("Cross-validation failed: %s. Continuing without CV.", e)
 
-        # ── Full training ─────────────────────────────────────────────────
+        # Full training
         clf = RandomForestClassifier(
             n_trees=self.n_trees,
             max_depth=self.max_depth,
@@ -288,7 +185,7 @@ class ModelTrainer:
                 training_duration_s=time.time() - t_start,
             )
 
-        # ── Save model ────────────────────────────────────────────────────
+        # Save model 
         model_filename = f"{version}.joblib"
         model_path     = os.path.join(self.model_dir, model_filename)
         try:
@@ -297,7 +194,7 @@ class ModelTrainer:
             logger.warning("Model save failed: %s", e)
             model_path = ""
 
-        # ── Build result ──────────────────────────────────────────────────
+        # Build result
         top_features = clf.get_top_features(5)
         all_importances = clf.all_feature_importances()
         duration = time.time() - t_start
@@ -329,18 +226,6 @@ class ModelTrainer:
     ) -> TrainingResult:
         """
         Load feature matrices and labels from JSON files then train.
-
-        Parameters
-        ----------
-        feature_paths : list of str
-            Paths to JSON files containing lists of feature vectors.
-        label_paths : list of str
-            Paths to JSON files containing lists of integer labels.
-        version_tag : str, optional
-
-        Returns
-        -------
-        TrainingResult
         """
         X_all: List[List[float]] = []
         y_all: List[int]         = []
@@ -376,42 +261,18 @@ class ModelTrainer:
     ) -> bool:
         """
         Determine whether retraining should be triggered.
-
-        Parameters
-        ----------
-        new_samples_since_last : int
-            Number of new labeled samples accumulated since last training.
-        retrain_interval : int, optional
-            Threshold. Default 50.
-
-        Returns
-        -------
-        bool
         """
         return new_samples_since_last >= retrain_interval
 
     def load_model(self, model_path: str) -> RandomForestClassifier:
         """
         Load a previously trained model from disk.
-
-        Parameters
-        ----------
-        model_path : str
-
-        Returns
-        -------
-        RandomForestClassifier
         """
         return RandomForestClassifier.load_model(model_path)
 
     def list_saved_models(self) -> List[Dict[str, Any]]:
         """
         List all .joblib model files in the model directory.
-
-        Returns
-        -------
-        list of dict
-            Each dict: {version, path, size_kb, modified_at}
         """
         models = []
         if not os.path.exists(self.model_dir):
@@ -429,10 +290,7 @@ class ModelTrainer:
                 })
         return models
 
-    # ─────────────────────────────────────────────────────────────────────────
     # PRIVATE HELPERS
-    # ─────────────────────────────────────────────────────────────────────────
-
     def _validate_dataset(
         self,
         X: List[List[float]],

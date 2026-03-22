@@ -1,57 +1,7 @@
 """
-zelvryn/profiles/drift_detector.py
-=====================================
 DriftDetector — detects when a user's recent behaviour has diverged significantly
 from their historical profile, distinguishing legitimate behaviour drift from attack.
-
-The drift vs attack distinction problem
------------------------------------------
-Zelvryn's anomaly engine flags sessions where behaviour diverges from the stored
-profile. But legitimate users change their behaviour too: a junior developer
-promoted to senior may start performing admin operations they never touched before.
-A researcher who switches projects changes their document access patterns entirely.
-
-Without drift detection, legitimate role changes produce constant CHALLENGE
-decisions for weeks until the EWMA profile slowly catches up. With drift detection,
-the system identifies the change as gradual and consistent (drift) rather than
-sudden and erratic (attack), and accelerates profile adaptation.
-
-Detection method: KL-divergence on action frequency vectors
--------------------------------------------------------------
-The KL-divergence (Kullback-Leibler divergence) measures how different one
-probability distribution is from another:
-
-  KL(P || Q) = Σ P(x) * log(P(x) / Q(x))
-
-Where:
-  P = recent action frequency distribution (last N actions)
-  Q = historical profile distribution (full stored profile)
-
-KL-divergence properties:
-  KL = 0.0   : identical distributions (no drift)
-  KL = small : minor behavioural shift (normal variation)
-  KL = large : significant drift (role change or attack)
-
-The detector uses a sliding window of recent actions and compares it to the
-stored profile. Drift is declared when KL-divergence exceeds a threshold
-across multiple consecutive windows (avoiding false alarms from temporary spikes).
-
-Drift vs attack differentiation
----------------------------------
-  Drift    : gradual increase in KL over many sessions, action distribution
-             shifts to a new stable state, timing patterns remain similar
-  Attack   : sudden KL spike in a single session, timing anomaly co-occurs,
-             sensitive action proportion spikes
-
-The DriftDetector signals that drift may be occurring. The ABSAv2Engine makes
-the final determination — if drift is accompanied by timing anomalies, it is
-more likely an attack and the engine penalises trust accordingly.
-
-Author : Vyrak
-System : Zelvryn — Adaptive Behavioral Signature Authentication
-Version: 2.0
 """
-
 import logging
 import math
 import time
@@ -82,24 +32,6 @@ _KL_EPSILON: float = 1e-8
 class DriftReport:
     """
     Result of a drift detection analysis.
-
-    Attributes
-    ----------
-    user_id : str
-    kl_divergence : float
-        KL divergence between recent and historical action distributions.
-    is_drifting : bool
-        True if KL divergence exceeds the threshold.
-    consecutive_drift_count : int
-        How many consecutive windows have shown drift.
-    recommend_soft_reset : bool
-        True when consecutive drift exceeds the reset threshold — the profile
-        should be partially reset to accelerate adaptation.
-    drift_direction : dict
-        {action_type: delta} showing which action types increased/decreased.
-    timing_changed : bool
-        Whether timing patterns also changed (drift vs attack signal).
-    analysed_at : float
     """
     user_id:                   str
     kl_divergence:             float              = 0.0
@@ -123,24 +55,6 @@ class DriftReport:
 class DriftDetector:
     """
     Detects gradual behavioural drift in user profiles.
-
-    Maintains a per-user history of KL-divergence readings to identify
-    sustained drift patterns vs temporary fluctuations.
-
-    Parameters
-    ----------
-    kl_threshold : float, optional
-        KL-divergence above which a single window is flagged as drifting.
-        Default 0.30 (roughly 30% distributional shift).
-    consecutive_drift_threshold : int, optional
-        Number of consecutive drift signals before a soft-reset is recommended.
-        Default 5.
-    recent_window : int, optional
-        Number of recent actions used to compute the "current" distribution.
-        Default 30.
-    timing_cv_change_threshold : float, optional
-        Minimum change in interval coefficient of variation to flag timing drift.
-        Default 0.3 (30% change in timing variability).
     """
 
     def __init__(
@@ -158,24 +72,11 @@ class DriftDetector:
         # {user_id: deque of (kl_value, timestamp)}
         self._kl_history: Dict[str, Deque[Tuple[float, float]]] = {}
 
-    # ─────────────────────────────────────────────────────────────────────────
     # PRIMARY INTERFACE
-    # ─────────────────────────────────────────────────────────────────────────
 
     def check_drift(self, profile: BehavioralProfile) -> DriftReport:
         """
         Analyse a profile for behavioural drift.
-
-        Compares the distribution of the last `recent_window` recorded actions
-        against the full historical profile distribution.
-
-        Parameters
-        ----------
-        profile : BehavioralProfile
-
-        Returns
-        -------
-        DriftReport
         """
         user_id = profile.user_id
 
@@ -187,17 +88,17 @@ class DriftDetector:
                 is_drifting   = False,
             )
 
-        # ── Compute recent action distribution ────────────────────────────
+        # Compute recent action distribution 
         recent_actions = list(profile.action_history)[-self.recent_window:]
         recent_dist    = self._action_distribution(recent_actions)
 
-        # ── Get historical distribution from full profile ─────────────────
+        # Get historical distribution from full profile
         historical_dist = profile.get_mean_vector()
 
-        # ── KL-divergence ─────────────────────────────────────────────────
+        # KL-divergence
         kl = self._kl_divergence(recent_dist, historical_dist)
 
-        # ── Update per-user history ───────────────────────────────────────
+        # Update per-user history
         history = self._kl_history.setdefault(user_id, deque(maxlen=20))
         history.append((kl, time.time()))
 
@@ -207,12 +108,12 @@ class DriftDetector:
         is_drifting         = kl > self.kl_threshold
         recommend_reset     = consecutive >= self.consecutive_threshold
 
-        # ── Drift direction ───────────────────────────────────────────────
+        # ── Drift direction 
         drift_direction = self._compute_drift_direction(
             recent_dist, historical_dist
         )
 
-        # ── Timing change detection ───────────────────────────────────────
+        # ── Timing change detection
         timing_changed = self._check_timing_change(profile, recent_actions)
 
         report = DriftReport(
@@ -240,27 +141,6 @@ class DriftDetector:
         """
         Apply a soft profile reset by blending the recent distribution into
         the historical profile with a higher weight.
-
-        Unlike a full reset (which would discard all history and trigger cold
-        start), a soft reset accelerates EWMA adaptation while preserving the
-        overall profile structure.
-
-        After a soft reset:
-          - The EWMA vector shifts toward the recent distribution
-          - The adaptive threshold is recalculated
-          - The KL history for this user is cleared
-
-        Parameters
-        ----------
-        profile : BehavioralProfile
-        blend_weight : float, optional
-            Weight given to the recent distribution in the blend.
-            Default 0.3 (recent behaviour gets 30% weight in the new profile).
-
-        Returns
-        -------
-        BehavioralProfile
-            The modified profile (modified in place).
         """
         user_id = profile.user_id
         recent_actions = list(profile.action_history)[-self.recent_window:]
@@ -282,15 +162,11 @@ class DriftDetector:
         if total > 0:
             blended = [v / total for v in blended]
 
-        # Apply to profile EWMA vector
         if profile.ewma_vector is not None:
             profile.ewma_vector = blended
 
-        # Update vector_sum to reflect the blend
         total_count = profile.vector_count
         profile.vector_sum = [v * total_count for v in blended]
-
-        # Clear KL history to restart drift monitoring
         self._kl_history.pop(user_id, None)
 
         logger.info(
@@ -302,17 +178,6 @@ class DriftDetector:
     def kl_trend(self, user_id: str, n: int = 10) -> List[float]:
         """
         Return the last N KL-divergence values for a user.
-
-        Used by the dashboard to plot drift trends over time.
-
-        Parameters
-        ----------
-        user_id : str
-        n : int
-
-        Returns
-        -------
-        list of float
         """
         history = self._kl_history.get(user_id, deque())
         values  = [kl for kl, _ in history]
@@ -322,10 +187,8 @@ class DriftDetector:
         """Clear the KL history for a user (called on profile deletion)."""
         self._kl_history.pop(user_id, None)
 
-    # ─────────────────────────────────────────────────────────────────────────
-    # PRIVATE HELPERS
-    # ─────────────────────────────────────────────────────────────────────────
 
+    # PRIVATE HELPERS
     @staticmethod
     def _action_distribution(actions: List[UserAction]) -> List[float]:
         """
@@ -344,21 +207,6 @@ class DriftDetector:
     def _kl_divergence(p: List[float], q: List[float]) -> float:
         """
         Compute KL-divergence KL(P || Q).
-
-        Both P and Q must have the same length and sum to 1.0 (probability
-        distributions). Epsilon smoothing prevents log(0).
-
-        Parameters
-        ----------
-        p : list of float
-            Recent distribution.
-        q : list of float
-            Historical distribution.
-
-        Returns
-        -------
-        float
-            KL-divergence >= 0.
         """
         kl = 0.0
         for pi, qi in zip(p, q):
@@ -373,9 +221,6 @@ class DriftDetector:
     ) -> int:
         """
         Count the number of consecutive most-recent drift signals.
-
-        Counts backwards from the most recent reading until a non-drift
-        reading is encountered.
         """
         count = 0
         for kl, _ in reversed(list(history)):
@@ -392,9 +237,6 @@ class DriftDetector:
     ) -> Dict[str, float]:
         """
         Compute how each action type's frequency changed (recent - historical).
-
-        Positive delta = this action type is used more than historically.
-        Negative delta = used less.
         """
         direction = {}
         for i, action_type in enumerate(UserAction.ACTION_TYPES):
@@ -410,23 +252,6 @@ class DriftDetector:
     ) -> bool:
         """
         Check whether timing patterns have changed alongside action distribution.
-
-        A true drift (role change) often changes timing too: an admin doing
-        batch operations may act faster than a reader browsing documents.
-        An attack is more likely to show timing drift without action drift.
-
-        Computes the CV of intervals from recent actions and compares to the
-        profile's historical CV.
-
-        Parameters
-        ----------
-        profile : BehavioralProfile
-        recent_actions : list of UserAction
-
-        Returns
-        -------
-        bool
-            True if timing has changed significantly.
         """
         if len(recent_actions) < 5:
             return False

@@ -1,59 +1,7 @@
 """
-zelvryn/profiles/shared_device_detector.py
-============================================
 SharedDeviceDetector — analyses a behavioural profile's timing interval
 distribution for bimodal structure indicating that two or more people share
 the same account.
-
-The shared account problem
-----------------------------
-When two people share an account (common in households, small teams, or
-legacy enterprise systems with shared service accounts), Zelvryn's profile
-builds a confused mixture of two distinct behavioural signatures. This causes:
-
-  - Chronic false positives: User A's patterns flag as anomalous against
-    User B's baseline and vice versa.
-  - Degraded ML accuracy: The training samples include mixed behaviour,
-    producing a centroid that fits neither user well.
-  - Unreliable timing statistics: The timing distribution is bimodal
-    (two peaks), making mean and stdev meaningless.
-
-Detection: bimodal clustering on inter-action intervals
----------------------------------------------------------
-Human typing and navigation rhythms are distinctive: a fast typist acts at
-~1-2 second intervals; a careful reader at ~5-15 seconds. When two people
-share an account, the interval histogram shows two clusters — one per person.
-
-The detector runs k-means with k=2 on the recorded inter-action intervals.
-A high silhouette score (cluster separation measure) indicates the two
-clusters are well-separated and likely represent two distinct users.
-
-When bimodality is detected:
-  1. The account is flagged and the user is notified.
-  2. Two "sub-profile blueprints" are generated — the timing and action
-     distributions associated with each cluster.
-  3. These blueprints can be used to initialise two new sub-profiles if
-     the user confirms the split via the appeal/account settings flow.
-
-Silhouette score
-----------------
-The silhouette score measures how well each data point fits its assigned
-cluster vs the alternative cluster:
-
-  s(i) = (b(i) - a(i)) / max(a(i), b(i))
-  where:
-    a(i) = mean distance to other points in same cluster (cohesion)
-    b(i) = mean distance to nearest other cluster (separation)
-
-  s = 1.0 : perfect separation (clearly two distinct clusters)
-  s = 0.0 : ambiguous (clusters overlap)
-  s = -1.0: misclassified (wrong cluster)
-
-We flag bimodality when the mean silhouette score exceeds a threshold.
-
-Author : Vyrak
-System : Zelvryn — Adaptive Behavioral Signature Authentication
-Version: 2.0
 """
 
 import logging
@@ -62,7 +10,6 @@ import random
 import time
 from dataclasses import dataclass, field
 from typing import Any, Dict, List, Optional, Tuple
-
 from core.profile import BehavioralProfile
 from core.action import UserAction
 
@@ -86,22 +33,6 @@ KMEANS_N_INIT:   int = 5    # multiple restarts to avoid local optima
 class SubProfileBlueprint:
     """
     Blueprint for a sub-profile derived from one cluster of shared-account data.
-
-    Attributes
-    ----------
-    cluster_id : int
-        0 or 1 — which k-means cluster this blueprint represents.
-    mean_interval : float
-        Estimated mean inter-action interval for this sub-user.
-    std_interval : float
-        Estimated interval standard deviation.
-    interval_count : int
-        Number of intervals in this cluster.
-    action_proportion : float
-        Fraction of total intervals belonging to this cluster.
-    estimated_actions : list of str
-        Action types disproportionately associated with this cluster
-        (inferred from which sessions produced these intervals).
     """
     cluster_id:          int
     mean_interval:       float
@@ -125,24 +56,6 @@ class SubProfileBlueprint:
 class SharedDeviceReport:
     """
     Result of a shared-device detection analysis.
-
-    Attributes
-    ----------
-    user_id : str
-    is_shared : bool
-        True if bimodal timing distribution was detected.
-    silhouette_score : float
-        Cluster separation quality (0=none, 1=perfect).
-    cluster_means : list of float
-        Mean interval for each cluster.
-    cluster_gap_s : float
-        Gap between cluster means (seconds).
-    sub_profile_blueprints : list of SubProfileBlueprint
-        One blueprint per detected user, for sub-profile creation.
-    confidence : str
-        "HIGH", "MEDIUM", or "LOW" based on silhouette score.
-    intervals_analysed : int
-    analysed_at : float
     """
     user_id:                 str
     is_shared:               bool                       = False
@@ -167,19 +80,7 @@ class SharedDeviceReport:
 class SharedDeviceDetector:
     """
     Detects shared-account usage via bimodal timing interval clustering.
-
-    Parameters
-    ----------
-    silhouette_threshold : float, optional
-        Minimum silhouette score to declare shared device. Default 0.45.
-    min_cluster_gap_s : float, optional
-        Minimum seconds between cluster means. Default 3.0.
-    min_intervals : int, optional
-        Minimum intervals needed for analysis. Default 40.
-    random_seed : int, optional
-        Seed for k-means initialisation. Default 42.
     """
-
     def __init__(
         self,
         silhouette_threshold: float = BIMODAL_SILHOUETTE_THRESHOLD,
@@ -192,21 +93,10 @@ class SharedDeviceDetector:
         self.min_intervals       = min_intervals
         self.random_seed         = random_seed
 
-    # ─────────────────────────────────────────────────────────────────────────
     # PRIMARY INTERFACE
-    # ─────────────────────────────────────────────────────────────────────────
-
     def analyse(self, profile: BehavioralProfile) -> SharedDeviceReport:
         """
         Analyse a profile's timing distribution for bimodal structure.
-
-        Parameters
-        ----------
-        profile : BehavioralProfile
-
-        Returns
-        -------
-        SharedDeviceReport
         """
         user_id   = profile.user_id
         intervals = profile.time_intervals
@@ -218,7 +108,7 @@ class SharedDeviceDetector:
                 intervals_analysed = len(intervals),
             )
 
-        # ── Run k-means (k=2) with multiple restarts ──────────────────────
+        # Run k-means (k=2) with multiple restarts
         best_labels: List[int]   = []
         best_centres: List[float] = [0.0, 0.0]
         best_inertia: float      = float("inf")
@@ -232,10 +122,10 @@ class SharedDeviceDetector:
                 best_labels   = labels
                 best_centres  = centres
 
-        # ── Compute silhouette score ───────────────────────────────────────
+        # Compute silhouette score
         sil_score = self._silhouette_score(intervals, best_labels)
 
-        # ── Check cluster separation ───────────────────────────────────────
+        # Check cluster separation
         cluster_gap = abs(best_centres[0] - best_centres[1])
 
         is_shared = (
@@ -245,7 +135,7 @@ class SharedDeviceDetector:
 
         confidence = self._confidence_label(sil_score)
 
-        # ── Build sub-profile blueprints ───────────────────────────────────
+        # Build sub-profile blueprints
         blueprints: List[SubProfileBlueprint] = []
         if is_shared:
             blueprints = self._build_blueprints(
@@ -280,25 +170,13 @@ class SharedDeviceDetector:
     ) -> Optional[Tuple[SubProfileBlueprint, SubProfileBlueprint]]:
         """
         Return two sub-profile blueprints if the account appears shared.
-
-        Parameters
-        ----------
-        profile : BehavioralProfile
-
-        Returns
-        -------
-        tuple of (SubProfileBlueprint, SubProfileBlueprint) or None
-            None if no shared device pattern was detected.
         """
         report = self.analyse(profile)
         if not report.is_shared or len(report.sub_profile_blueprints) < 2:
             return None
         return (report.sub_profile_blueprints[0], report.sub_profile_blueprints[1])
 
-    # ─────────────────────────────────────────────────────────────────────────
     # K-MEANS (1D, implemented from scratch to avoid numpy dependency)
-    # ─────────────────────────────────────────────────────────────────────────
-
     def _kmeans_1d(
         self,
         data: List[float],
@@ -307,19 +185,6 @@ class SharedDeviceDetector:
     ) -> Tuple[List[int], List[float], float]:
         """
         Run k-means clustering on a 1D dataset.
-
-        Parameters
-        ----------
-        data : list of float
-        k : int
-        seed : int
-
-        Returns
-        -------
-        tuple of (labels, centres, inertia)
-            labels: cluster assignment per data point
-            centres: cluster centroid values
-            inertia: sum of squared distances to nearest centroid
         """
         rng = random.Random(seed)
         n   = len(data)
@@ -377,21 +242,11 @@ class SharedDeviceDetector:
         )
         return (labels, centres, inertia)
 
-    # ─────────────────────────────────────────────────────────────────────────
     # SILHOUETTE SCORE
-    # ─────────────────────────────────────────────────────────────────────────
-
     @staticmethod
     def _silhouette_score(data: List[float], labels: List[int]) -> float:
         """
         Compute mean silhouette score for a 1D clustering result.
-
-        For each point i:
-          a(i) = mean distance to other points in the same cluster
-          b(i) = mean distance to points in the nearest other cluster
-          s(i) = (b(i) - a(i)) / max(a(i), b(i))
-
-        Returns mean s(i) across all points.
         """
         n = len(data)
         if n < 4:
@@ -437,10 +292,7 @@ class SharedDeviceDetector:
 
         return sum(silhouettes) / len(silhouettes) if silhouettes else 0.0
 
-    # ─────────────────────────────────────────────────────────────────────────
     # BLUEPRINT CONSTRUCTION
-    # ─────────────────────────────────────────────────────────────────────────
-
     def _build_blueprints(
         self,
         intervals: List[float],
@@ -465,8 +317,7 @@ class SharedDeviceDetector:
             std_iv  = math.sqrt(variance)
             proportion = len(cluster_intervals) / n
 
-            # Estimate action types from recent action history if available
-            # Use a simple heuristic: the cluster with shorter intervals
+            # Estimate action types from recent action history if available. Use a simple heuristic: the cluster with shorter intervals
             # is more likely to be associated with read-heavy quick sessions
             recent = list(profile.action_history)
             if recent and len(recent) >= len(intervals) // 2:

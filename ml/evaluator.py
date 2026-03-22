@@ -1,41 +1,6 @@
 """
-zelvryn/ml/evaluator.py
-========================
 ModelEvaluator — computes comprehensive evaluation metrics for Zelvryn's
 ML classifiers, supporting both batch evaluation and threshold sweep analysis.
-
-Why security-specific metrics matter
--------------------------------------
-Standard ML metrics (accuracy, F1) are insufficient for security classifiers.
-A system that correctly identifies 99% of sessions as human may still miss
-99% of attacks if bot sessions are rare. Security systems require:
-
-  FAR (False Acceptance Rate)
-    = False Negatives / Total Bots
-    = fraction of bot sessions incorrectly allowed through
-    A FAR of 0.05 means 5% of actual bot attacks are missed.
-    MINIMISE this — missing an attack is the primary security risk.
-
-  FRR (False Rejection Rate)
-    = False Positives / Total Humans
-    = fraction of legitimate user sessions incorrectly challenged/blocked
-    An FRR of 0.02 means 2% of real users get a false challenge.
-    MINIMISE this — too many false positives destroy user experience.
-
-  EER (Equal Error Rate)
-    The threshold at which FAR == FRR. Lower EER = better classifier.
-    Used as a single-number summary for classifier comparison.
-
-Threshold sweep
----------------
-The evaluator sweeps P(bot) thresholds from 0.0 to 1.0 and computes FAR/FRR
-at each point. This produces the DET (Detection Error Tradeoff) curve and
-allows operators to choose a threshold that balances security and usability
-for their specific deployment context.
-
-Author : Vyrak
-System : Zelvryn — Adaptive Behavioral Signature Authentication
-Version: 2.0
 """
 
 import logging
@@ -59,34 +24,6 @@ THRESHOLD_SWEEP_POINTS: int = 100
 class EvaluationReport:
     """
     Comprehensive evaluation report for a single classifier.
-
-    Attributes
-    ----------
-    classifier_version : str
-    n_samples : int
-    n_human : int
-    n_bot : int
-    threshold_used : float
-        P(bot) threshold used for binary predictions.
-    precision : float
-    recall : float
-    f1 : float
-    accuracy : float
-    far : float
-        False Acceptance Rate (bot sessions incorrectly allowed).
-    frr : float
-        False Rejection Rate (human sessions incorrectly blocked).
-    eer : float
-        Equal Error Rate from the threshold sweep.
-    eer_threshold : float
-        P(bot) threshold at which EER occurs.
-    confusion_matrix : dict
-        {TP, FP, TN, FN} counts.
-    roc_points : list of dict
-        [{threshold, far, frr, tpr, fpr}, ...] for plotting curves.
-    top_features : list of tuple
-        (feature_name, importance) top 5.
-    evaluated_at : float
     """
     classifier_version:  str
     n_samples:           int                   = 0
@@ -114,20 +51,6 @@ class EvaluationReport:
     ) -> Tuple[bool, List[str]]:
         """
         Check whether this model meets promotion quality gates.
-
-        Parameters
-        ----------
-        max_far : float
-            Maximum acceptable False Acceptance Rate.
-        max_frr : float
-            Maximum acceptable False Rejection Rate.
-        min_f1 : float
-            Minimum acceptable F1 score.
-
-        Returns
-        -------
-        tuple of (bool, list of str)
-            (passes, list_of_failed_criteria)
         """
         failures = []
         if self.far > max_far:
@@ -172,13 +95,6 @@ class EvaluationReport:
 class ModelEvaluator:
     """
     Evaluates ML classifier performance using security-appropriate metrics.
-
-    Parameters
-    ----------
-    threshold : float, optional
-        P(bot) decision threshold. Default ML_BOT_CONFIDENCE_THRESH.
-    sweep_points : int, optional
-        Number of threshold values to evaluate for ROC/DET curves.
     """
 
     def __init__(
@@ -189,10 +105,7 @@ class ModelEvaluator:
         self.threshold    = threshold
         self.sweep_points = sweep_points
 
-    # ─────────────────────────────────────────────────────────────────────────
     # PRIMARY EVALUATION
-    # ─────────────────────────────────────────────────────────────────────────
-
     def evaluate(
         self,
         classifier: RandomForestClassifier,
@@ -202,26 +115,6 @@ class ModelEvaluator:
     ) -> EvaluationReport:
         """
         Run a full evaluation of a classifier on a labeled dataset.
-
-        Computes:
-          - Binary classification metrics at the configured threshold
-          - Confusion matrix (TP, FP, TN, FN)
-          - FAR and FRR at the configured threshold
-          - Full threshold sweep for DET/ROC curve
-          - EER from the sweep
-          - Feature importances from the classifier
-
-        Parameters
-        ----------
-        classifier : RandomForestClassifier
-        X : list of list of float
-        y : list of int
-        version : str, optional
-            Version label for the report.
-
-        Returns
-        -------
-        EvaluationReport
         """
         if not classifier.is_trained:
             logger.warning("Evaluating an untrained classifier — all metrics will be 0.")
@@ -286,20 +179,6 @@ class ModelEvaluator:
     ) -> Dict[str, Any]:
         """
         Compare two classifiers on the same dataset.
-
-        Returns a comparison dict showing which model wins on each metric
-        and by how much.
-
-        Parameters
-        ----------
-        clf_a, clf_b : RandomForestClassifier
-        X : list of list of float
-        y : list of int
-        version_a, version_b : str
-
-        Returns
-        -------
-        dict
         """
         report_a = self.evaluate(clf_a, X, y, version_a)
         report_b = self.evaluate(clf_b, X, y, version_b)
@@ -335,20 +214,12 @@ class ModelEvaluator:
             },
         }
 
-    # ─────────────────────────────────────────────────────────────────────────
     # METRIC CALCULATIONS
-    # ─────────────────────────────────────────────────────────────────────────
 
     @staticmethod
     def _confusion_matrix(y_true: List[int], y_pred: List[int]) -> Dict[str, int]:
         """
         Compute confusion matrix counts.
-
-        Convention (bot = positive class):
-          TP = correctly predicted bot
-          FP = human incorrectly predicted as bot  (causes FRR)
-          TN = correctly predicted human
-          FN = bot incorrectly predicted as human  (causes FAR)
         """
         tp = sum(1 for t, p in zip(y_true, y_pred) if t == 1 and p == 1)
         fp = sum(1 for t, p in zip(y_true, y_pred) if t == 0 and p == 1)
@@ -381,7 +252,6 @@ class ModelEvaluator:
     def _far_frr(y_true: List[int], y_pred: List[int]) -> Tuple[float, float]:
         """
         Compute FAR and FRR.
-
         FAR = FN / (FN + TP) = missed bots / all bots
         FRR = FP / (FP + TN) = blocked humans / all humans
         """
@@ -402,18 +272,6 @@ class ModelEvaluator:
     ) -> List[Dict[str, float]]:
         """
         Sweep P(bot) thresholds from 0.0 to 1.0 and compute FAR/FRR at each.
-
-        Parameters
-        ----------
-        probas : list of float
-            P(bot) scores from the classifier.
-        y_true : list of int
-            Ground-truth labels.
-
-        Returns
-        -------
-        list of dict
-            Each dict: {threshold, far, frr, tpr, fpr}
         """
         thresholds = [i / self.sweep_points for i in range(self.sweep_points + 1)]
         points = []
@@ -440,15 +298,6 @@ class ModelEvaluator:
     ) -> Tuple[float, float]:
         """
         Find the Equal Error Rate (where FAR ≈ FRR) from the sweep.
-
-        Parameters
-        ----------
-        roc_points : list of dict
-
-        Returns
-        -------
-        tuple of (float, float)
-            (eer_value, threshold_at_eer)
         """
         best_diff  = float("inf")
         best_eer   = 0.5

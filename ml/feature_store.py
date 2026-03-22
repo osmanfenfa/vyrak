@@ -1,51 +1,7 @@
 """
-zelvryn/ml/feature_store.py
-=============================
 FeatureStore — persists labeled (feature_vector, label) pairs for offline
 ML training. Provides the training data pipeline between the live evaluation
 engine and the ModelTrainer.
-
-Architecture
-------------
-The feature store has two storage backends selectable at runtime:
-
-  InMemoryBackend (default, for testing and development)
-    Stores records in a Python list. Fast, zero infrastructure, but does not
-    survive process restart. Suitable for unit tests and development sessions.
-
-  PostgreSQLBackend (for production)
-    Stores records in the `feature_vectors` table in PostgreSQL. Survives
-    restarts, supports multiple writer processes, enables analyst-verified
-    label management and cross-session analysis.
-
-    To activate: pass a database URL to FeatureStore(db_url="postgresql://...")
-    Requires: asyncpg and SQLAlchemy (installed via requirements.txt)
-
-    Schema (managed by db/migrations/):
-      CREATE TABLE feature_vectors (
-        id          SERIAL PRIMARY KEY,
-        user_id     TEXT NOT NULL,
-        session_id  TEXT,
-        vector      JSONB NOT NULL,         -- list of 20 floats
-        label       SMALLINT NOT NULL,      -- 0=human, 1=bot
-        verified    BOOLEAN DEFAULT FALSE,  -- analyst-confirmed label
-        source      TEXT DEFAULT 'live',    -- 'live', 'shadow', 'corpus'
-        created_at  TIMESTAMP DEFAULT now()
-      );
-
-Label quality tiers
--------------------
-  source='corpus'  + verified=True  : real attack data, highest quality
-  source='shadow'  + verified=True  : analyst-confirmed session labels
-  source='live'    + verified=False : heuristic auto-labels from engine
-  source='shadow'  + verified=False : shadow session heuristic labels
-
-The ModelTrainer can be instructed to use only verified labels for training
-or to include heuristic labels with appropriate class weighting.
-
-Author : Vyrak
-System : Zelvryn — Adaptive Behavioral Signature Authentication
-Version: 2.0
 """
 
 import json
@@ -73,23 +29,6 @@ class LabelSource(str, Enum):
 class FeatureRecord:
     """
     A single labeled training record in the feature store.
-
-    Attributes
-    ----------
-    user_id : str
-    session_id : str
-    vector : list of float
-        20-dimensional feature vector.
-    label : int
-        0 = human, 1 = bot.
-    verified : bool
-        True if an analyst has confirmed this label.
-    source : LabelSource
-        Origin of this record.
-    created_at : float
-        Unix timestamp.
-    record_id : str
-        Unique identifier (auto-generated if not provided).
     """
     user_id:    str
     session_id: str
@@ -123,14 +62,6 @@ class FeatureRecord:
 class FeatureStore:
     """
     Persists labeled feature vectors for ML training.
-
-    Parameters
-    ----------
-    db_url : str, optional
-        PostgreSQL connection URL. If None, uses in-memory storage.
-    max_records : int, optional
-        Maximum records to hold in memory (in-memory backend only).
-        Oldest records are evicted when exceeded. Default 100,000.
     """
 
     def __init__(
@@ -156,10 +87,7 @@ class FeatureStore:
         else:
             logger.info("FeatureStore: Using in-memory backend.")
 
-    # ─────────────────────────────────────────────────────────────────────────
     # PRIMARY INTERFACE
-    # ─────────────────────────────────────────────────────────────────────────
-
     def save(
         self,
         user_id:    str,
@@ -171,29 +99,6 @@ class FeatureStore:
     ) -> FeatureRecord:
         """
         Save a labeled feature vector to the store.
-
-        Parameters
-        ----------
-        user_id : str
-        vector : list of float
-            20-dimensional feature vector.
-        label : int
-            0 = human, 1 = bot.
-        session_id : str, optional
-        verified : bool, optional
-            Whether an analyst has confirmed this label.
-        source : str, optional
-            Label origin (see LabelSource enum).
-
-        Returns
-        -------
-        FeatureRecord
-            The saved record.
-
-        Raises
-        ------
-        ValueError
-            If vector has wrong dimension or label is invalid.
         """
         if len(vector) != ML_FEATURE_DIM:
             raise ValueError(
@@ -226,16 +131,6 @@ class FeatureStore:
     ) -> List[FeatureRecord]:
         """
         Save a batch of records.
-
-        Parameters
-        ----------
-        records_data : list of dict
-            Each dict must have: user_id, vector, label.
-            Optional: session_id, verified, source.
-
-        Returns
-        -------
-        list of FeatureRecord
         """
         saved = []
         for rd in records_data:
@@ -260,17 +155,6 @@ class FeatureStore:
     ) -> bool:
         """
         Set a record's label as analyst-verified.
-
-        Parameters
-        ----------
-        record_id : str
-        new_label : int
-            The verified label (0 or 1).
-
-        Returns
-        -------
-        bool
-            True if the record was found and updated.
         """
         for rec in self._records:
             if rec.record_id == record_id:
@@ -284,10 +168,7 @@ class FeatureStore:
         logger.warning("Record not found for verification: %s", record_id)
         return False
 
-    # ─────────────────────────────────────────────────────────────────────────
     # RETRIEVAL
-    # ─────────────────────────────────────────────────────────────────────────
-
     def get_training_batch(
         self,
         min_samples:    int  = ML_MIN_TRAIN_SAMPLES,
@@ -297,20 +178,6 @@ class FeatureStore:
     ) -> Tuple[List[List[float]], List[int]]:
         """
         Retrieve a labeled (X, y) training batch from the store.
-
-        Parameters
-        ----------
-        min_samples : int, optional
-            Minimum samples required. Returns ([], []) if insufficient.
-        verified_only : bool, optional
-            If True, only return analyst-verified records.
-        max_samples : int, optional
-            Cap on total samples returned. None = no cap.
-        balance : bool, optional
-            If True, balance classes by downsampling the majority. Default True.
-
-        Returns
-        -------
         tuple of (list of list, list of int)
         """
         records = self._filter_records(verified_only=verified_only)
@@ -345,17 +212,6 @@ class FeatureStore:
     ) -> List[FeatureRecord]:
         """
         Return records that have not been analyst-verified.
-
-        Used to populate the analyst review queue.
-
-        Parameters
-        ----------
-        limit : int
-            Maximum records to return.
-
-        Returns
-        -------
-        list of FeatureRecord
         """
         unverified = [r for r in self._records if not r.verified]
         # Return highest-confidence bot predictions first (most useful for review)
@@ -381,15 +237,6 @@ class FeatureStore:
     def delete_user_records(self, user_id: str) -> int:
         """
         Delete all records for a user (GDPR right to erasure).
-
-        Parameters
-        ----------
-        user_id : str
-
-        Returns
-        -------
-        int
-            Number of records deleted.
         """
         before = len(self._records)
         self._records = [r for r in self._records if r.user_id != user_id]
@@ -399,17 +246,10 @@ class FeatureStore:
         )
         return deleted
 
-    # ─────────────────────────────────────────────────────────────────────────
     # STATISTICS
-    # ─────────────────────────────────────────────────────────────────────────
-
     def stats(self) -> Dict[str, Any]:
         """
         Return store statistics.
-
-        Returns
-        -------
-        dict
         """
         total   = len(self._records)
         human   = sum(1 for r in self._records if r.label == 0)
@@ -435,16 +275,6 @@ class FeatureStore:
     def export_jsonl(self, path: str, verified_only: bool = False) -> int:
         """
         Export all (or verified-only) records to a JSONL file.
-
-        Parameters
-        ----------
-        path : str
-        verified_only : bool
-
-        Returns
-        -------
-        int
-            Number of records exported.
         """
         records = self._filter_records(verified_only=verified_only)
         with open(path, "w", encoding="utf-8") as f:
@@ -461,14 +291,6 @@ class FeatureStore:
     ) -> "FeatureStore":
         """
         Create a FeatureStore and populate it from a JSONL export file.
-
-        Parameters
-        ----------
-        path : str
-        db_url : str, optional
-
-        Returns
-        -------
         FeatureStore
         """
         store = cls(db_url=db_url)
@@ -493,11 +315,7 @@ class FeatureStore:
                     logger.debug("Skipping malformed record: %s", e)
         logger.info("Imported %d records from %s", loaded, path)
         return store
-
-    # ─────────────────────────────────────────────────────────────────────────
     # PRIVATE HELPERS
-    # ─────────────────────────────────────────────────────────────────────────
-
     def _filter_records(
         self,
         verified_only: bool = False,

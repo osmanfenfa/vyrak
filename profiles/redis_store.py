@@ -1,52 +1,7 @@
 """
-zelvryn/profiles/redis_store.py
-=================================
 RedisProfileStore — persists BehavioralProfile objects in Redis for
 sub-millisecond read/write access across a horizontally scaled API fleet.
-
-Why Redis for profiles
------------------------
-The ABSAv2Engine is stateless by design: each evaluate_action() call reads
-the profile at the start and writes it at the end. For this to work across
-multiple API server instances (horizontal scaling), the profile must live
-in a shared, fast store — not in each server's local memory.
-
-Redis provides:
-  - Sub-millisecond reads (< 1ms at p99 for hash gets)
-  - Atomic writes (HSET is atomic — no partial updates)
-  - TTL-based auto-expiry (inactive profiles expire after 90 days)
-  - Cluster mode for horizontal Redis scaling
-  - AOF persistence (prevents profile loss on Redis restart)
-
-Serialisation strategy
------------------------
-BehavioralProfile objects are serialised to JSON for portability and
-debugging ease. In high-throughput deployments (>100k sessions/hour),
-replace JSON with msgpack for ~3x smaller payloads and faster encode/decode.
-
-The serialised profile includes all statistical fields but NOT the
-ml_training_data (which can be very large). Training data is managed
-separately by the FeatureStore (ml/feature_store.py).
-
-Connection management
----------------------
-The store accepts a pre-built redis.Redis client, enabling:
-  - Connection pooling (recommended for production)
-  - Cluster mode (redis.RedisCluster)
-  - TLS connections (redis.Redis(ssl=True))
-  - Testing with fakeredis (a drop-in in-memory Redis replacement)
-
-GDPR compliance
----------------
-delete(user_id) removes the profile and all associated keys permanently.
-This is the technical implementation of the right to erasure (GDPR Article 17).
-The API layer ensures deletion happens within 72 hours of a user request.
-
-Author : Vyrak
-System : Zelvryn — Adaptive Behavioral Signature Authentication
-Version: 2.0
 """
-
 import json
 import logging
 import time
@@ -78,34 +33,6 @@ class ProfileStorageError(Exception):
 class RedisProfileStore:
     """
     Persists and retrieves BehavioralProfile objects using Redis.
-
-    Parameters
-    ----------
-    redis_client : redis.Redis or compatible, optional
-        Pre-built Redis client. If None, a default localhost client is created.
-        Pass fakeredis.FakeRedis() for unit testing without infrastructure.
-    ttl_seconds : int, optional
-        Profile key TTL in seconds. Default 90 days.
-    key_prefix : str, optional
-        Namespace prefix for all keys. Default "zelvryn:profile:".
-
-    Example
-    -------
-    Production (with connection pool):
-      import redis
-      pool = redis.ConnectionPool.from_url(REDIS_URL, max_connections=50)
-      client = redis.Redis(connection_pool=pool)
-      store = RedisProfileStore(redis_client=client)
-
-    Testing (in-memory, no Redis needed):
-      import fakeredis
-      store = RedisProfileStore(redis_client=fakeredis.FakeRedis())
-
-    Async usage (FastAPI):
-      import redis.asyncio as aioredis
-      client = aioredis.from_url(REDIS_URL)
-      store = RedisProfileStore(redis_client=client)
-      # Use await store.get_async(user_id) etc.
     """
 
     def __init__(
@@ -126,27 +53,10 @@ class RedisProfileStore:
             ttl_seconds, key_prefix
         )
 
-    # ─────────────────────────────────────────────────────────────────────────
     # SYNCHRONOUS INTERFACE
-    # ─────────────────────────────────────────────────────────────────────────
-
     def get(self, user_id: str) -> Optional[BehavioralProfile]:
         """
-        Load a BehavioralProfile from Redis.
-
-        Parameters
-        ----------
-        user_id : str
-
-        Returns
-        -------
-        BehavioralProfile or None
-            None if no profile exists for this user.
-
-        Raises
-        ------
-        ProfileStorageError
-            If Redis is unreachable or deserialisation fails.
+        Load a BehavioralProfile from Redis by user ID
         """
         key = self._profile_key(user_id)
         try:
@@ -179,23 +89,6 @@ class RedisProfileStore:
     def save(self, user_id: str, profile: BehavioralProfile) -> bool:
         """
         Persist a BehavioralProfile to Redis.
-
-        Serialises the profile to JSON and stores it with TTL. The TTL is
-        extended on every save, so active users never have their profile expire.
-
-        Parameters
-        ----------
-        user_id : str
-        profile : BehavioralProfile
-
-        Returns
-        -------
-        bool
-            True on success.
-
-        Raises
-        ------
-        ProfileStorageError
         """
         key = self._profile_key(user_id)
         try:
@@ -216,17 +109,6 @@ class RedisProfileStore:
     def delete(self, user_id: str) -> bool:
         """
         Delete a user's profile from Redis (GDPR right to erasure).
-
-        Removes the profile key, metadata key, and any lock keys.
-
-        Parameters
-        ----------
-        user_id : str
-
-        Returns
-        -------
-        bool
-            True if a profile was found and deleted. False if not found.
         """
         keys_to_delete = [
             self._profile_key(user_id),
@@ -248,14 +130,6 @@ class RedisProfileStore:
     def exists(self, user_id: str) -> bool:
         """
         Check if a profile exists for the given user.
-
-        Parameters
-        ----------
-        user_id : str
-
-        Returns
-        -------
-        bool
         """
         try:
             return bool(self._redis.exists(self._profile_key(user_id)))
@@ -266,17 +140,6 @@ class RedisProfileStore:
     def ttl_extend(self, user_id: str) -> bool:
         """
         Reset the TTL for a user's profile without modifying the profile data.
-
-        Called at session end to ensure active users' profiles don't expire.
-
-        Parameters
-        ----------
-        user_id : str
-
-        Returns
-        -------
-        bool
-            True if the key existed and its TTL was extended.
         """
         try:
             result = self._redis.expire(self._profile_key(user_id), self._ttl)
@@ -294,17 +157,6 @@ class RedisProfileStore:
     ) -> BehavioralProfile:
         """
         Load a profile or create a new one if none exists.
-
-        Parameters
-        ----------
-        user_id : str
-        fallback_profile : BehavioralProfile, optional
-            Profile to return (and save) if no existing profile is found.
-            If None, creates an empty profile.
-
-        Returns
-        -------
-        BehavioralProfile
         """
         profile = self.get(user_id)
         if profile is not None:
@@ -321,24 +173,11 @@ class RedisProfileStore:
             )
         return new_profile
 
-    # ─────────────────────────────────────────────────────────────────────────
     # METADATA AND ADMIN
-    # ─────────────────────────────────────────────────────────────────────────
 
     def get_profile_meta(self, user_id: str) -> Optional[Dict[str, Any]]:
         """
         Return lightweight metadata for a profile without loading the full data.
-
-        Metadata includes: vector_count, last_updated, adaptive_threshold,
-        profile_age_days, ttl_remaining_s.
-
-        Parameters
-        ----------
-        user_id : str
-
-        Returns
-        -------
-        dict or None
         """
         try:
             raw = self._redis.get(self._meta_key(user_id))
@@ -360,19 +199,6 @@ class RedisProfileStore:
     ) -> List[str]:
         """
         Return a list of user IDs that have profiles in Redis.
-
-        Uses SCAN (non-blocking) rather than KEYS (blocking).
-
-        Parameters
-        ----------
-        pattern : str
-            Glob pattern for user IDs. Default "*" = all users.
-        max_results : int
-            Maximum user IDs to return.
-
-        Returns
-        -------
-        list of str
         """
         full_pattern = self._profile_key(pattern)
         prefix_len   = len(self._key_prefix)
@@ -400,10 +226,6 @@ class RedisProfileStore:
     def store_stats(self) -> Dict[str, Any]:
         """
         Return statistics about the profile store.
-
-        Returns
-        -------
-        dict
         """
         try:
             info = self._redis.info("memory")
@@ -422,22 +244,12 @@ class RedisProfileStore:
             }
         except Exception as e:
             return {"error": str(e)}
-
-    # ─────────────────────────────────────────────────────────────────────────
+        
     # ASYNC WRAPPERS (for FastAPI / asyncio deployments)
-    # ─────────────────────────────────────────────────────────────────────────
 
     async def get_async(self, user_id: str) -> Optional[BehavioralProfile]:
         """
         Async version of get(). Use with redis.asyncio clients.
-
-        Parameters
-        ----------
-        user_id : str
-
-        Returns
-        -------
-        BehavioralProfile or None
         """
         key = self._profile_key(user_id)
         raw = await self._redis.get(key)
@@ -469,11 +281,8 @@ class RedisProfileStore:
         ]
         deleted = await self._redis.delete(*keys)
         return deleted > 0
-
-    # ─────────────────────────────────────────────────────────────────────────
+    
     # PRIVATE HELPERS
-    # ─────────────────────────────────────────────────────────────────────────
-
     def _profile_key(self, user_id: str) -> str:
         return f"{self._key_prefix}{user_id}"
 
@@ -514,10 +323,7 @@ class RedisProfileStore:
     @staticmethod
     def _create_default_client():
         """
-        Create a default Redis client pointing to localhost:6379.
-
-        In production, always pass a pre-built client with connection pooling.
-        This default is suitable for development and testing only.
+        Create a default Redis client
         """
         try:
             import redis
@@ -551,7 +357,6 @@ class RedisProfileStore:
 class _NoOpRedisStub:
     """
     A minimal no-op stub used when Redis is unavailable during testing.
-    All operations return safe defaults without raising exceptions.
     """
     _store: Dict[str, str] = {}
 
