@@ -1,0 +1,99 @@
+version: "3.9"
+
+# Zelvryn full-stack docker-compose
+# Development:  docker compose up
+# Production:   docker compose -f docker-compose.yml --profile prod up -d
+# Run migrations: docker compose run --rm api alembic -c db/migrations/alembic.ini upgrade head
+
+services:
+
+  # ── PostgreSQL ──────────────────────────────────────────────────────────────
+  postgres:
+    image: postgres:16-alpine
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER:     zelvryn
+      POSTGRES_PASSWORD: zelvryn
+      POSTGRES_DB:       zelvryn
+    ports:
+      - "5432:5432"
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U zelvryn"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+  # ── Redis ───────────────────────────────────────────────────────────────────
+  redis:
+    image: redis:7-alpine
+    restart: unless-stopped
+    command: redis-server /etc/redis/redis.conf
+    ports:
+      - "6379:6379"
+    volumes:
+      - ./config/redis.conf:/etc/redis/redis.conf:ro
+      - redis_data:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
+  # ── Zelvryn API ─────────────────────────────────────────────────────────────
+  api:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    restart: unless-stopped
+    env_file: .env
+    environment:
+      DATABASE_URL:  postgresql+asyncpg://zelvryn:zelvryn@postgres:5432/zelvryn
+      REDIS_URL:     redis://redis:6379/0
+      ZELVRYN_ENV:   development
+      API_HOST:      0.0.0.0
+      API_PORT:      "8000"
+    ports:
+      - "8000:8000"
+    volumes:
+      # Mount source for live-reload in development
+      - .:/app
+      - ./logs:/app/logs
+      - ./models:/app/models
+      - ./data:/app/data
+    depends_on:
+      postgres: { condition: service_healthy }
+      redis:    { condition: service_healthy }
+    healthcheck:
+      test: ["CMD-SHELL", "curl -sf http://localhost:8000/health/live || exit 1"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 15s
+    command: >
+      uvicorn api.main:app
+        --host 0.0.0.0
+        --port 8000
+        --reload
+        --log-level info
+
+  # ── Dashboard (development) ─────────────────────────────────────────────────
+  dashboard:
+    image: node:20-alpine
+    working_dir: /app
+    command: sh -c "npm install && npm run dev -- --host 0.0.0.0"
+    volumes:
+      - ./dashboard:/app
+    ports:
+      - "5173:5173"
+    environment:
+      VITE_API_URL: ""      # use Vite proxy → localhost:8000
+    depends_on:
+      - api
+    profiles:
+      - dashboard
+
+volumes:
+  postgres_data:
+  redis_data:

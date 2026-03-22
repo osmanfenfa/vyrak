@@ -1,0 +1,163 @@
+/* Zelvryn Dashboard — global styles */
+
+:root {
+  --navy:        #0D1B2A;
+  --navy-mid:    #1A2E40;
+  --navy-light:  #243447;
+  --teal:        #1D9E75;
+  --teal-light:  #E1F5EE;
+  --teal-dark:   #0F6E56;
+  --amber:       #BA7517;
+  --amber-light: #FAEEDA;
+  --red:         #A32D2D;
+  --red-light:   #FCEBEB;
+  --gray:        #444441;
+  --gray-light:  #F1EFE8;
+  --gray-mid:    #D3D1C7;
+  --white:       #FFFFFF;
+  --text:        #0D0D0D;
+  --text-muted:  #5F5E5A;
+
+  --radius-sm:   4px;
+  --radius-md:   8px;
+  --radius-lg:   12px;
+
+  --shadow-sm: 0 1px 3px rgba(0,0,0,0.10);
+  --shadow-md: 0 4px 12px rgba(0,0,0,0.12);
+
+  --font: "Inter", "Segoe UI", system-ui, sans-serif;
+  --font-mono: "Fira Code", "Courier New", monospace;
+}
+
+*, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+
+html, body, #root {
+  height: 100%;
+  font-family: var(--font);
+  font-size: 14px;
+  background: var(--gray-light);
+  color: var(--text);
+  line-height: 1.5;
+}
+
+/* ── Layout helpers ─────────────────────────────────────────── */
+.flex        { display: flex; }
+.flex-col    { display: flex; flex-direction: column; }
+.items-center { align-items: center; }
+.justify-between { justify-content: space-between; }
+.gap-1 { gap: 4px; }
+.gap-2 { gap: 8px; }
+.gap-3 { gap: 12px; }
+.gap-4 { gap: 16px; }
+
+/* ── Card ──────────────────────────────────────────────────── */
+.card {
+  background: var(--white);
+  border-radius: var(--radius-lg);
+  box-shadow: var(--shadow-sm);
+  padding: 16px;
+}
+.card-title {
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--text-muted);
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+  margin-bottom: 12px;
+}
+
+/* ── Buttons ───────────────────────────────────────────────── */
+button {
+  cursor: pointer;
+  font-family: var(--font);
+  font-size: 13px;
+  border: none;
+  border-radius: var(--radius-md);
+  padding: 6px 14px;
+  transition: opacity 0.15s;
+}
+button:hover   { opacity: 0.85; }
+button:disabled { opacity: 0.45; cursor: not-allowed; }
+
+.btn-primary {
+  background: var(--navy);
+  color: var(--white);
+}
+.btn-teal {
+  background: var(--teal);
+  color: var(--white);
+}
+.btn-ghost {
+  background: transparent;
+  color: var(--navy);
+  border: 1px solid var(--gray-mid);
+}
+.btn-danger {
+  background: var(--red);
+  color: var(--white);
+}
+.btn-sm { padding: 4px 10px; font-size: 12px; }
+
+/* ── Form ──────────────────────────────────────────────────── */
+input, select {
+  font-family: var(--font);
+  font-size: 13px;
+  border: 1px solid var(--gray-mid);
+  border-radius: var(--radius-md);
+  padding: 6px 10px;
+  outline: none;
+  transition: border-color 0.15s;
+}
+input:focus, select:focus { border-color: var(--teal); }
+
+/* ── Status pills ──────────────────────────────────────────── */
+.pill {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  font-size: 11px;
+  font-weight: 600;
+  padding: 2px 8px;
+  border-radius: 99px;
+}
+.pill-allow    { background: #DCFCE7; color: #166534; }
+.pill-challenge { background: var(--amber-light); color: var(--amber); }
+.pill-block    { background: var(--red-light); color: var(--red); }
+.pill-healthy  { background: #DCFCE7; color: #166534; }
+.pill-degraded { background: var(--amber-light); color: var(--amber); }
+.pill-down     { background: var(--red-light); color: var(--red); }
+.pill-shadow   { background: #EDE9FE; color: #4C1D95; }
+
+/* ── Scrollable containers ─────────────────────────────────── */
+.scroll-y {
+  overflow-y: auto;
+  scrollbar-width: thin;
+  scrollbar-color: var(--gray-mid) transparent;
+}
+.scroll-y::-webkit-scrollbar { width: 4px; }
+.scroll-y::-webkit-scrollbar-thumb { background: var(--gray-mid); border-radius: 2px; }
+
+/* ── Spinner ───────────────────────────────────────────────── */
+@keyframes spin { to { transform: rotate(360deg); } }
+.spinner {
+  width: 18px; height: 18px;
+  border: 2px solid var(--gray-mid);
+  border-top-color: var(--teal);
+  border-radius: 50%;
+  animation: spin 0.7s linear infinite;
+}
+
+/* ── Error banner ──────────────────────────────────────────── */
+.error-bar {
+  background: var(--red-light);
+  color: var(--red);
+  border-radius: var(--radius-md);
+  padding: 8px 12px;
+  font-size: 12px;
+}
+
+/* ── Mono values ───────────────────────────────────────────── */
+.mono {
+  font-family: var(--font-mono);
+  font-size: 12px;
+}

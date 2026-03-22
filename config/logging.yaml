@@ -1,0 +1,119 @@
+# config/logging.yaml
+# Zelvryn structured logging configuration.
+# Loaded by api/main.py at startup via logging.config.dictConfig().
+# Override LOG_LEVEL env var to change root verbosity.
+
+version: 1
+disable_existing_loggers: false
+
+# ── Formatters ────────────────────────────────────────────────────────────────
+
+formatters:
+  console:
+    format: "%(asctime)s [%(levelname)-8s] %(name)s: %(message)s"
+    datefmt: "%Y-%m-%d %H:%M:%S"
+
+  json:
+    # Structured JSON for log aggregators (Datadog, ELK, CloudWatch).
+    # Switch to this in production by setting handler_api to use json formatter.
+    format: >-
+      {"time":"%(asctime)s","level":"%(levelname)s",
+       "logger":"%(name)s","message":%(message)s}
+    datefmt: "%Y-%m-%dT%H:%M:%S"
+
+  audit:
+    # Audit log entries are already JSON strings — pass through as-is.
+    format: "%(message)s"
+
+# ── Handlers ──────────────────────────────────────────────────────────────────
+
+handlers:
+  console:
+    class: logging.StreamHandler
+    formatter: console
+    stream: ext://sys.stdout
+    level: DEBUG
+
+  audit_file:
+    class: logging.handlers.RotatingFileHandler
+    formatter: audit
+    filename: logs/audit.jsonl
+    maxBytes: 52428800   # 50 MB
+    backupCount: 10
+    encoding: utf-8
+    level: INFO
+
+  error_file:
+    class: logging.handlers.RotatingFileHandler
+    formatter: console
+    filename: logs/error.log
+    maxBytes: 10485760   # 10 MB
+    backupCount: 5
+    encoding: utf-8
+    level: WARNING
+
+# ── Loggers ───────────────────────────────────────────────────────────────────
+
+loggers:
+  # Zelvryn audit trail — CHALLENGE/BLOCK decisions, GDPR erasures, promotions
+  zelvryn.audit:
+    level: INFO
+    handlers: [audit_file, console]
+    propagate: false
+
+  # Core evaluation engine — set to WARNING in production to reduce noise
+  core:
+    level: INFO
+    handlers: [console]
+    propagate: false
+
+  # ML training pipeline
+  ml:
+    level: INFO
+    handlers: [console]
+    propagate: false
+
+  # Profile and cold start layers
+  profiles:
+    level: INFO
+    handlers: [console]
+    propagate: false
+
+  coldstart:
+    level: INFO
+    handlers: [console]
+    propagate: false
+
+  # Ingestion pipeline
+  ingestion:
+    level: INFO
+    handlers: [console]
+    propagate: false
+
+  # FastAPI / uvicorn — suppress verbose access logs in production
+  uvicorn:
+    level: INFO
+    handlers: [console]
+    propagate: false
+
+  uvicorn.access:
+    level: WARNING
+    handlers: [console]
+    propagate: false
+
+  uvicorn.error:
+    level: WARNING
+    handlers: [console, error_file]
+    propagate: false
+
+  # SQLAlchemy — WARNING unless debugging queries
+  sqlalchemy.engine:
+    level: WARNING
+    handlers: [console]
+    propagate: false
+
+# ── Root logger ───────────────────────────────────────────────────────────────
+
+root:
+  level: INFO
+  handlers: [console, error_file]
