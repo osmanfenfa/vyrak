@@ -1,0 +1,37 @@
+# This directory holds shadow mode session export files.
+#
+# Files in this directory are written by:
+#   - ingestion/shadow_mode.py  (ShadowModeLogger.export_session)
+#   - api/routers/shadow.py     (GET /shadow/export endpoint)
+#   - scripts/run_shadow_mode.py
+#
+# File naming convention:
+#   shadow_{session_id}_{YYYYMMDD_HHMMSS}.jsonl
+#   shadow_{session_id}_{YYYYMMDD_HHMMSS}.csv
+#
+# File format (JSONL — one JSON object per line):
+#   {
+#     "user_id":        "<pseudonymised SHA-256 hash>",
+#     "session_id":     "<pseudonymised SHA-256 hash>",
+#     "action_type":    "read",
+#     "timestamp":      1735000000.0,
+#     "real_decision":  "ALLOW",
+#     "trust_score":    87.5,
+#     "bot_prob":       0.12,
+#     "heuristic_label": 0,
+#     "verified_label": null,
+#     "feature_vector": [0.0, 0.7, 0.1, ...],   <- 20 floats
+#     "anomalies":      []
+#   }
+#
+# To export shadow training data:
+#   python scripts/run_shadow_mode.py --export --format jsonl
+#
+# To use exported data for ML training:
+#   python scripts/train_initial_model.py --shadow-dir data/shadow_exports/
+#
+# All exported files use pseudonymised user_id and session_id by default.
+# Raw IDs are never written to disk.
+#
+# This .gitkeep file is intentionally tracked by git to preserve the
+# directory structure. The export files themselves are in .gitignore.

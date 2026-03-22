@@ -1,0 +1,23 @@
+# This directory holds raw CTU-13 binetflow CSV files for ML training.
+#
+# Download from: https://www.stratosphereips.org/datasets-ctu13
+#
+# Recommended scenarios (binetflow format):
+#   scenario1.binetflow   — Neris botnet (spam + click fraud)
+#   scenario2.binetflow   — Neris botnet (variant)
+#   scenario9.binetflow   — Murlo botnet
+#   scenario10.binetflow  — NSIS.ay botnet
+#   scenario11.binetflow  — Rbot botnet
+#
+# CSV columns: StartTime, Dur, Proto, SrcAddr, Sport, Dir,
+#              DstAddr, Dport, State, sTos, dTos, TotPkts,
+#              TotBytes, SrcBytes, Label
+#
+# After placing binetflow files here, run:
+#   python scripts/ingest_cicids.py --dataset ctu13 --path data/raw/ctu13/
+#
+# This will convert the botnet flows to Zelvryn's 20-dimensional
+# feature vector format and append to data/processed/corpus_features.json
+#
+# This .gitkeep file is intentionally tracked by git to preserve the
+# directory structure. The binetflow files themselves are in .gitignore.
