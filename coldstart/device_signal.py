@@ -1,53 +1,3 @@
-"""
-zelvryn/coldstart/device_signals.py
-=====================================
-DeviceSignalBridge — supplementary risk signals that operate without
-behavioural history, bridging the cold start gap from action zero.
-
-Why device signals are needed
-------------------------------
-The ramp-up period (RampUpManager) relaxes thresholds but cannot eliminate
-the cold start gap entirely. A sophisticated attacker who knows Zelvryn is
-deployed could attempt to exploit the ramp-up window by attacking immediately
-after account creation before any profile has been established.
-
-Device signals provide a parallel risk channel that requires zero behavioural
-history. They answer three questions that can be answered from the very first
-request:
-
-  1. Is this IP address known to be malicious?
-     (IP reputation via external lookup or local blocklist)
-
-  2. Is this device consistent with past logins?
-     (Device fingerprint hashing — browser, OS, screen, timezone)
-
-  3. Is this account logging in from two locations too fast to be human?
-     (Geo-velocity: same account, two distant locations, short time window)
-
-Scoring
--------
-Each signal contributes a risk score in [0.0, 1.0]:
-  0.0 = no risk detected
-  0.5 = moderate risk (worthy of monitoring)
-  1.0 = maximum risk (strong indicator of attack)
-
-The combined DeviceRiskScore aggregates these into a single composite score
-and a list of triggered signal codes, which ABSAv2Engine incorporates as an
-additional trust penalty independent of the behavioural window.
-
-Integration design
-------------------
-DeviceSignalBridge is intentionally decoupled from ABSAv2Engine. The engine
-calls it optionally via the API layer (api/dependencies.py) rather than
-directly. This keeps core/ free of device-signal logic, and allows device
-signals to be disabled for deployments where IP and geolocation data is
-unavailable or prohibited by privacy policy.
-
-Author : Vyrak
-System : Zelvryn — Adaptive Behavioral Signature Authentication
-Version: 2.0
-"""
-
 import hashlib
 import json
 import logging
@@ -56,20 +6,12 @@ import time
 from dataclasses import dataclass, field
 from typing import Dict, List, Optional, Set, Tuple
 
-logger = logging.getLogger(__name__)
+# Use canonical logger name despite this file's historical singular module name.
+logger = logging.getLogger("coldstart.device_signals")
 
-# Maximum acceptable distance (km) per hour to flag geo-velocity anomaly.
-# A legitimate user cannot travel faster than ~900 km/h (fastest commercial flight).
-# We use 1200 km/h as the limit to account for international flight connections.
 GEO_VELOCITY_LIMIT_KMH: float = 1200.0
-
-# Default TTL (seconds) for IP reputation cache entries. 1 hour.
 IP_REPUTATION_CACHE_TTL: int = 3600
-
-# Minimum time between the same account's logins from different locations (seconds).
-GEO_VELOCITY_MIN_WINDOW: int = 300   # 5 minutes
-
-# Risk score thresholds for composite assessment
+GEO_VELOCITY_MIN_WINDOW: int = 300 
 COMPOSITE_RISK_LOW:    float = 0.25
 COMPOSITE_RISK_MEDIUM: float = 0.50
 COMPOSITE_RISK_HIGH:   float = 0.75
@@ -79,23 +21,6 @@ COMPOSITE_RISK_HIGH:   float = 0.75
 class DeviceRiskScore:
     """
     Result of a device signal assessment for a single request.
-
-    Attributes
-    ----------
-    composite_score : float
-        Weighted average of all individual signal scores. Range [0.0, 1.0].
-    ip_risk : float
-        Risk score from IP reputation check. 0.0 = clean, 1.0 = malicious.
-    fingerprint_risk : float
-        Risk score from device fingerprint check. 0.0 = known device, 1.0 = unknown.
-    geo_velocity_risk : float
-        Risk score from geo-velocity check. 0.0 = plausible, 1.0 = physically impossible.
-    triggered_signals : list of str
-        Human-readable codes for each signal that contributed a non-zero risk.
-    risk_label : str
-        "LOW", "MEDIUM", "HIGH", or "CRITICAL".
-    assessed_at : float
-        Unix timestamp of the assessment.
     """
     composite_score:    float       = 0.0
     ip_risk:            float       = 0.0
@@ -136,38 +61,6 @@ class DeviceRiskScore:
 class DeviceSignalBridge:
     """
     Assesses device-level risk signals for incoming authentication requests.
-
-    All assessment is done synchronously and in-process. In production,
-    the IP reputation check can be upgraded to call an external API (e.g.,
-    AbuseIPDB, IPQualityScore) by overriding _check_ip_reputation_remote().
-
-    Parameters
-    ----------
-    ip_blocklist : set of str, optional
-        Set of known malicious IP addresses (from threat intel feeds).
-        Updated at runtime via add_to_blocklist() / remove_from_blocklist().
-    ip_allowlist : set of str, optional
-        Set of trusted IP addresses that bypass reputation checks (e.g.,
-        corporate office NAT IPs). Always score 0.0 for IP risk.
-    geo_velocity_enabled : bool, optional
-        Whether to perform geo-velocity checks. Requires that the caller
-        provides location data in assess(). Default True.
-    cache_ttl : int, optional
-        TTL in seconds for the IP reputation cache. Default 3600 (1 hour).
-
-    Attributes
-    ----------
-    _ip_blocklist : set of str
-    _ip_allowlist : set of str
-    _ip_cache : dict
-        Short-term cache of {ip: (risk_score, expires_at)} to avoid
-        redundant lookups within the TTL window.
-    _user_location_history : dict
-        {user_id: [(latitude, longitude, timestamp), ...]}
-        Rolling window of recent login locations for geo-velocity checks.
-    _device_fingerprint_db : dict
-        {user_id: set of fingerprint hashes}
-        Known device fingerprints for each user.
     """
 
     def __init__(
@@ -186,9 +79,7 @@ class DeviceSignalBridge:
         self._user_location_history:  Dict[str, List[Tuple[float, float, float]]] = {}
         self._device_fingerprint_db:  Dict[str, Set[str]] = {}
 
-    # ─────────────────────────────────────────────────────────────────────────
     # PRIMARY INTERFACE
-    # ─────────────────────────────────────────────────────────────────────────
 
     def assess(
         self,
@@ -203,44 +94,17 @@ class DeviceSignalBridge:
     ) -> DeviceRiskScore:
         """
         Perform a full device signal risk assessment for a login request.
-
-        Runs three independent checks and aggregates their scores into a
-        composite DeviceRiskScore.
-
-        Parameters
-        ----------
-        user_id : str
-            The authenticated user's ID (used for per-user history lookups).
-        ip : str, optional
-            Client IP address. IPv4 or IPv6.
-        user_agent : str, optional
-            Browser User-Agent string.
-        screen_resolution : str, optional
-            Client screen resolution (e.g., "1920x1080"). Included in fingerprint.
-        timezone_offset : int, optional
-            UTC offset in minutes (e.g., 60 = UTC+1).
-        latitude : float, optional
-            Client latitude for geo-velocity check.
-        longitude : float, optional
-            Client longitude for geo-velocity check.
-        timestamp : float, optional
-            Request timestamp. Defaults to time.time().
-
-        Returns
-        -------
-        DeviceRiskScore
-            Aggregated risk assessment with per-signal scores and labels.
         """
         ts = timestamp or time.time()
         signals: List[str] = []
 
-        # ── Signal 1: IP Reputation ───────────────────────────────────────
+        # IP Reputation
         ip_risk = 0.0
         if ip:
             ip_risk, ip_signals = self._check_ip_reputation(ip)
             signals.extend(ip_signals)
 
-        # ── Signal 2: Device Fingerprint ──────────────────────────────────
+        # Device Fingerprint
         fp_risk = 0.0
         if any(v is not None for v in [user_agent, screen_resolution, timezone_offset]):
             fp_hash = self._compute_fingerprint(
@@ -254,7 +118,7 @@ class DeviceSignalBridge:
             # Register this fingerprint in the known-device database
             self._register_fingerprint(user_id, fp_hash)
 
-        # ── Signal 3: Geo-velocity ────────────────────────────────────────
+        # Geo-velocity
         geo_risk = 0.0
         if (self.geo_velocity_enabled
                 and latitude is not None
@@ -267,7 +131,7 @@ class DeviceSignalBridge:
             # Record this location in history
             self._record_location(user_id, latitude, longitude, ts)
 
-        # ── Composite score ───────────────────────────────────────────────
+        # ── Composite score 
         # Weights: IP reputation is most reliable (0.5), fingerprint moderate
         # (0.3), geo-velocity context-dependent (0.2)
         weights = {"ip": 0.5, "fp": 0.3, "geo": 0.2}

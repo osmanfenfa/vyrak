@@ -1,4 +1,5 @@
 import logging
+import os
 import time
 import uuid
 from typing import Annotated, Dict, Optional, Tuple
@@ -14,6 +15,24 @@ logger = logging.getLogger(__name__)
 # BEARER TOKEN AUTHENTICATION
 
 _bearer_scheme = HTTPBearer(auto_error=False)
+
+
+def _is_jwt_like(token: str) -> bool:
+    return token.count(".") == 2
+
+
+def _allow_plaintext_tokens(settings) -> bool:
+    """
+    Allow non-JWT bearer tokens in development unless explicitly disabled.
+
+    Override with AUTH_ALLOW_PLAINTEXT_TOKENS=true|false.
+    """
+    raw = os.environ.get("AUTH_ALLOW_PLAINTEXT_TOKENS")
+    if raw is not None:
+        return raw.lower() == "true"
+
+    env = str(getattr(settings, "zelvryn_env", "development")).lower()
+    return env != "production"
 
 
 def get_current_user(
@@ -38,10 +57,24 @@ def get_current_user(
             headers={"WWW-Authenticate": "Bearer"},
         )
 
-    token = credentials.credentials
+    token = (credentials.credentials or "").strip()
+    if len(token) < 3:
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Invalid token.",
+            headers={"WWW-Authenticate": "Bearer"},
+        )
+
     try:
         import jwt
         from config.settings import settings
+
+        if _allow_plaintext_tokens(settings) and not _is_jwt_like(token):
+            logger.debug(
+                "Using plaintext dev token as user_id (env=%s).",
+                getattr(settings, "zelvryn_env", "unknown"),
+            )
+            return token
 
         secret_key = getattr(settings, "jwt_secret_key", "zelvryn-dev-secret")
         algorithm  = getattr(settings, "jwt_algorithm", "HS256")
@@ -66,11 +99,6 @@ def get_current_user(
             "PyJWT not installed. Using token value as user_id (development only). "
             "Install: pip install pyjwt"
         )
-        if not token or len(token) < 3:
-            raise HTTPException(
-                status_code=status.HTTP_401_UNAUTHORIZED,
-                detail="Invalid token.",
-            )
         return token
 
     except Exception as e:

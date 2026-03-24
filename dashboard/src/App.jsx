@@ -11,6 +11,7 @@ import FeatureImportance from "./components/FeatureImportance.jsx";
 import SessionSummary from "./components/SessionSummary.jsx";
 import ColdStartBadge from "./components/ColdStartBadge.jsx";
 import RiskBadge from "./components/RiskBadge.jsx";
+import { collectDeviceMetadata } from "./utils/deviceMetadata.js";
 
 function formatUptime(seconds) {
   if (seconds < 60) return `${seconds}s`;
@@ -53,12 +54,31 @@ function Header({ modelStatus, isHealthy, shadowMode, uptime }) {
 }
 
 function SessionStarter({ onStart, starting, error }) {
-  const [uid, setUid] = useState("alice@example.com");
+  const [uid, setUid] = useState("zelvryn@example.com");
+  const [collecting, setCollecting] = useState(false);
+  const [metadataError, setMetadataError] = useState(null);
+
+  const handleStart = async () => {
+    if (!uid.trim() || starting || collecting) return;
+
+    setCollecting(true);
+    setMetadataError(null);
+    try {
+      const metadata = await collectDeviceMetadata();
+      await onStart(uid.trim(), metadata);
+    } catch {
+      // Continue even if metadata collection fails.
+      setMetadataError("Device metadata could not be fully collected.");
+      await onStart(uid.trim(), null);
+    } finally {
+      setCollecting(false);
+    }
+  };
 
   return (
     <div className="card session-starter">
       <div className="card-title">Start Session</div>
-      <p>Enter a user id to begin live action monitoring.</p>
+      <p>Enter a user id to begin live monitoring with real device signals.</p>
       <div style={{ display: "flex", flexDirection: "column", gap: 10 }}>
         <input
           value={uid}
@@ -67,11 +87,15 @@ function SessionStarter({ onStart, starting, error }) {
         />
         <button
           className="btn-teal"
-          onClick={() => onStart(uid)}
-          disabled={starting || !uid.trim()}
+          onClick={handleStart}
+          disabled={starting || collecting || !uid.trim()}
         >
-          {starting ? "Starting..." : "Start Monitoring"}
+          {collecting ? "Collecting Device Data..." : starting ? "Starting..." : "Start Monitoring"}
         </button>
+        <div className="starter-note">
+          Browser may ask for location permission. If denied, IP-level location is used.
+        </div>
+        {metadataError && <div className="error-bar">{metadataError}</div>}
         {error && <div className="error-bar">{error}</div>}
       </div>
     </div>
@@ -79,6 +103,7 @@ function SessionStarter({ onStart, starting, error }) {
 }
 
 export default function App() {
+  const [sessionMetadata, setSessionMetadata] = useState(null);
   const { modelStatus, isHealthy, shadowMode, uptime } = useModelStatus();
   const {
     sessionId,
@@ -103,6 +128,22 @@ export default function App() {
   const riskRating = summary?.risk_rating ?? "LOW RISK";
   const rampActive = latestFeed?.ramp_active ?? false;
 
+  const handleStart = async (uid, metadata = null) => {
+    const data = await start(uid, metadata);
+    if (data) {
+      setSessionMetadata(metadata);
+    }
+    return data;
+  };
+
+  const handleEnd = async () => {
+    await end();
+    setSessionMetadata(null);
+  };
+
+  const handleSubmitAction = (actionType) =>
+    submitAction(actionType, "resource", sessionMetadata);
+
   return (
     <div className="app-shell">
       <Header
@@ -114,7 +155,7 @@ export default function App() {
 
       <main className="app-main">
         {!sessionId ? (
-          <SessionStarter onStart={start} starting={starting} error={startError} />
+          <SessionStarter onStart={handleStart} starting={starting} error={startError} />
         ) : (
           <div className="dashboard-grid">
             <section className="left-stack">
@@ -125,8 +166,13 @@ export default function App() {
                     <div className="mono muted">
                       {sessionId?.slice(0, 22)}...
                     </div>
+                    <div className="session-signal-row mono muted">
+                      {sessionMetadata?.ip ? `IP ${sessionMetadata.ip}` : "IP unavailable"}
+                      {sessionMetadata?.geo_city ? ` • ${sessionMetadata.geo_city}` : ""}
+                      {sessionMetadata?.geo_country ? `, ${sessionMetadata.geo_country}` : ""}
+                    </div>
                   </div>
-                  <button className="btn-ghost btn-sm" onClick={end}>
+                  <button className="btn-ghost btn-sm" onClick={handleEnd}>
                     End
                   </button>
                 </div>
@@ -150,7 +196,7 @@ export default function App() {
 
               {actionError && <div className="error-bar">{actionError}</div>}
 
-              <ActionFeed feed={feed} onSubmit={submitAction} loading={loading} />
+              <ActionFeed feed={feed} onSubmit={handleSubmitAction} loading={loading} />
             </section>
 
             <section className="right-stack">
@@ -164,7 +210,7 @@ export default function App() {
                 <SessionSummary
                   summary={summary}
                   onRestore={() => restoreTrust(20)}
-                  onEnd={end}
+                  onEnd={handleEnd}
                 />
               </div>
             </section>

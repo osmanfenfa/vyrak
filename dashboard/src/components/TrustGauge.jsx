@@ -1,114 +1,113 @@
-/**
- * TrustGauge — animated semicircle gauge showing current trust score (0–100).
- *
- * Props:
- *   score      {number}  0–100
- *   label      {string}  risk label
- *   rampActive {boolean}
- */
-
 import { useEffect, useRef } from "react";
 
-const SIZE    = 180;
-const R       = 70;
-const CX      = SIZE / 2;
-const CY      = SIZE / 2 + 10;
-const CIRCUM  = Math.PI * R;   // half-circle circumference
+const SIZE = 180;
+const RADIUS = 70;
+const CENTER_X = SIZE / 2;
+const CENTER_Y = SIZE / 2 + 10;
+const HALF_CIRCUMFERENCE = Math.PI * RADIUS;
 
 function scoreColor(score) {
-  if (score >= 80) return "#1D9E75";
-  if (score >= 50) return "#BA7517";
-  if (score >= 20) return "#E85D24";
-  return "#A32D2D";
+  if (score >= 80) return "#0f8b6f";
+  if (score >= 50) return "#b66b16";
+  if (score >= 20) return "#e85d24";
+  return "#b42318";
 }
 
 export default function TrustGauge({ score = 100, label = "LOW RISK", rampActive = false }) {
   const arcRef = useRef(null);
+  const safeScore = Math.max(0, Math.min(100, Number(score) || 0));
+  const color = scoreColor(safeScore);
 
   useEffect(() => {
     if (!arcRef.current) return;
-    const fraction = Math.min(1, Math.max(0, score / 100));
-    const dashLen  = CIRCUM * fraction;
-    arcRef.current.style.strokeDashoffset = CIRCUM - dashLen;
-  }, [score]);
-
-  const color = scoreColor(score);
+    const fraction = safeScore / 100;
+    const dashLength = HALF_CIRCUMFERENCE * fraction;
+    arcRef.current.style.strokeDashoffset = HALF_CIRCUMFERENCE - dashLength;
+  }, [safeScore]);
 
   return (
-    <div style={{ textAlign: "center" }}>
+    <div className="trust-gauge">
       <svg
         width={SIZE}
         height={SIZE / 2 + 30}
         viewBox={`0 0 ${SIZE} ${SIZE / 2 + 30}`}
-        style={{ overflow: "visible" }}
+        className="trust-gauge-svg"
       >
-        {/* Track */}
         <path
-          d={`M ${CX - R},${CY} A ${R},${R} 0 0 1 ${CX + R},${CY}`}
+          d={`M ${CENTER_X - RADIUS},${CENTER_Y} A ${RADIUS},${RADIUS} 0 0 1 ${CENTER_X + RADIUS},${CENTER_Y}`}
           fill="none"
-          stroke="#E5E3DC"
+          stroke="var(--line)"
           strokeWidth="14"
           strokeLinecap="round"
         />
 
-        {/* Filled arc */}
         <path
           ref={arcRef}
-          d={`M ${CX - R},${CY} A ${R},${R} 0 0 1 ${CX + R},${CY}`}
+          d={`M ${CENTER_X - RADIUS},${CENTER_Y} A ${RADIUS},${RADIUS} 0 0 1 ${CENTER_X + RADIUS},${CENTER_Y}`}
           fill="none"
           stroke={color}
           strokeWidth="14"
           strokeLinecap="round"
-          strokeDasharray={`${CIRCUM} ${CIRCUM}`}
-          strokeDashoffset={CIRCUM}
+          strokeDasharray={`${HALF_CIRCUMFERENCE} ${HALF_CIRCUMFERENCE}`}
+          strokeDashoffset={HALF_CIRCUMFERENCE}
           style={{ transition: "stroke-dashoffset 0.6s ease, stroke 0.4s ease" }}
         />
 
-        {/* Score text */}
         <text
-          x={CX} y={CY - 8}
+          x={CENTER_X}
+          y={CENTER_Y - 8}
           textAnchor="middle"
           fontSize="32"
           fontWeight="700"
           fill={color}
           style={{ transition: "fill 0.4s ease" }}
         >
-          {Math.round(score)}
+          {Math.round(safeScore)}
         </text>
 
-        {/* "Trust Score" label */}
-        <text x={CX} y={CY + 12} textAnchor="middle" fontSize="11" fill="#888780">
+        <text
+          x={CENTER_X}
+          y={CENTER_Y + 12}
+          textAnchor="middle"
+          fontSize="11"
+          fill="var(--text-muted)"
+        >
           Trust Score
         </text>
 
-        {/* Min / Max labels */}
-        <text x={CX - R - 4} y={CY + 16} textAnchor="end" fontSize="10" fill="#B4B2A9">0</text>
-        <text x={CX + R + 4} y={CY + 16} textAnchor="start" fontSize="10" fill="#B4B2A9">100</text>
+        <text
+          x={CENTER_X - RADIUS - 4}
+          y={CENTER_Y + 16}
+          textAnchor="end"
+          fontSize="10"
+          fill="var(--text-muted)"
+        >
+          0
+        </text>
+        <text
+          x={CENTER_X + RADIUS + 4}
+          y={CENTER_Y + 16}
+          textAnchor="start"
+          fontSize="10"
+          fill="var(--text-muted)"
+        >
+          100
+        </text>
       </svg>
 
-      {/* Risk label + cold start note */}
-      <div style={{ marginTop: 4, display: "flex", justifyContent: "center", gap: 6 }}>
+      <div className="trust-gauge-pills">
         <span
           className="pill"
           style={{
-            background: color + "22",
+            background: `${color}1f`,
             color,
-            fontSize: "12px",
+            fontSize: 12,
             padding: "2px 10px",
-            borderRadius: "99px",
-            fontWeight: 600,
           }}
         >
           {label}
         </span>
-        {rampActive && (
-          <span className="pill" style={{
-            background: "#EDE9FE", color: "#6D28D9",
-            fontSize: "11px", padding: "2px 8px", borderRadius: "99px",
-          }}>
-            RAMP-UP
-          </span>
-        )}
+        {rampActive && <span className="pill pill-shadow">RAMP-UP</span>}
       </div>
     </div>
   );

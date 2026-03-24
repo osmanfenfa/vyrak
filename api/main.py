@@ -15,6 +15,48 @@ from core.constants import SHADOW_MODE_ENABLED, LOG_LEVEL
 logger = logging.getLogger(__name__)
 
 
+def _load_local_env_file(path: str = ".env") -> None:
+    """
+    Lightweight .env loader for local development.
+    Existing process environment variables always win.
+    """
+    if not os.path.exists(path):
+        return
+
+    loaded = 0
+    try:
+        with open(path, encoding="utf-8") as env_file:
+            for raw_line in env_file:
+                line = raw_line.strip()
+                if not line or line.startswith("#") or "=" not in line:
+                    continue
+
+                key, value = line.split("=", 1)
+                key = key.strip()
+                value = value.strip()
+
+                if key.startswith("export "):
+                    key = key[len("export "):].strip()
+                if not key or key in os.environ:
+                    continue
+
+                if (
+                    len(value) >= 2
+                    and value[0] == value[-1]
+                    and value[0] in ("'", '"')
+                ):
+                    value = value[1:-1]
+
+                os.environ[key] = value
+                loaded += 1
+    except Exception as e:
+        logger.warning("Failed to read %s (%s).", path, e)
+        return
+
+    if loaded:
+        logger.info("Loaded %d variable(s) from %s.", loaded, path)
+
+
 # LOGGING CONFIGURATION
 def _configure_logging() -> None:
     log_config = {
@@ -53,6 +95,7 @@ def _configure_logging() -> None:
 # LIFESPAN (STARTUP + SHUTDOWN)
 @asynccontextmanager
 async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
+    _load_local_env_file(".env")
     _configure_logging()
     logger.info("=" * 60)
     logger.info("Zelvryn ABSA API v2.0 — starting up")
@@ -124,8 +167,11 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
                 "Run scripts/train_initial_model.py to train the first model."
             )
 
-    except ImportError:
-        logger.warning("ml.registry not available. Running rule-based detection only.")
+    except ImportError as e:
+        logger.warning(
+            "ml.registry not available (%s). Running rule-based detection only.",
+            e,
+        )
         app.state.model_registry = None
 
     try:
@@ -137,8 +183,8 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
             "FeatureStore ready: backend=%s",
             "postgresql" if db_url else "memory"
         )
-    except ImportError:
-        logger.warning("ml.feature_store not available.")
+    except ImportError as e:
+        logger.warning("ml.feature_store not available (%s).", e)
         app.state.feature_store = None
 
     try:
@@ -152,10 +198,16 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
         app.state.population_prior = prior
 
         if prior.is_stale():
+            built_at = getattr(prior, "built_at", None)
+            age_days = (
+                (time.time() - float(built_at)) / 86400.0
+                if built_at is not None
+                else 0.0
+            )
             logger.warning(
                 "Population prior is stale (%.1f days old). "
                 "Run scripts/build_population_prior.py to rebuild.",
-                time.time() / 86400 - prior.built_at / 86400 if prior.built_at else 0
+                max(0.0, age_days),
             )
 
     except ImportError:

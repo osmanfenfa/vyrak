@@ -70,7 +70,8 @@ from core.constants import (
     COLD_START_RAMP_ACTIONS,
 )
 
-logger = logging.getLogger(__name__)
+# Use canonical logger name despite this file's historical typo.
+logger = logging.getLogger("coldstart.population_prior")
 
 # Sentinel action count given to prior-seeded profiles.
 # The engine checks `profile.vector_count >= COLD_START_RAMP_ACTIONS` to decide

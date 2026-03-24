@@ -25,6 +25,7 @@
 
   --shadow-xs: 0 1px 2px rgba(16, 24, 40, 0.08);
   --shadow-sm: 0 6px 16px rgba(16, 24, 40, 0.08);
+  --shadow-md: 0 10px 24px rgba(16, 24, 40, 0.08);
 
   --font: "Avenir Next", "Segoe UI", "Helvetica Neue", sans-serif;
   --font-mono: "IBM Plex Mono", "Consolas", "Courier New", monospace;
@@ -162,6 +163,19 @@ a {
   gap: 12px;
 }
 
+.starter-note {
+  color: var(--text-muted);
+  font-size: 11px;
+}
+
+.session-signal-row {
+  margin-top: 4px;
+  max-width: 250px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
 .footer {
   text-align: center;
   border-top: 1px solid var(--line);
@@ -185,6 +199,14 @@ a {
   border-radius: var(--radius-lg);
   box-shadow: var(--shadow-xs);
   padding: 14px;
+  animation: card-enter 260ms ease both;
+  transition: border-color 160ms ease, box-shadow 160ms ease, transform 160ms ease;
+}
+
+.card:hover {
+  border-color: #cfd7e1;
+  box-shadow: var(--shadow-md);
+  transform: translateY(-1px);
 }
 
 .card-title {
@@ -339,6 +361,97 @@ select:focus {
   to {
     transform: rotate(360deg);
   }
+}
+
+@keyframes card-enter {
+  from {
+    opacity: 0;
+    transform: translateY(6px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+
+.trust-gauge {
+  text-align: center;
+}
+
+.trust-gauge-svg {
+  overflow: visible;
+}
+
+.trust-gauge-pills {
+  margin-top: 4px;
+  display: flex;
+  justify-content: center;
+  gap: 6px;
+}
+
+.feature-list {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+.feature-row-head {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  font-size: 11px;
+  margin-bottom: 4px;
+}
+
+.feature-track {
+  height: 8px;
+  border-radius: 999px;
+  background: #e8edf2;
+  overflow: hidden;
+}
+
+.feature-fill {
+  height: 100%;
+  border-radius: 999px;
+  background: linear-gradient(90deg, #0f8b6f, #34b395);
+  transition: width 300ms ease;
+}
+
+.coldstart {
+  border: 1px solid #c8d8ec;
+  background: #f5f9ff;
+  border-radius: var(--radius-md);
+  padding: 8px 10px;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.coldstart-head {
+  display: flex;
+  justify-content: space-between;
+  font-size: 12px;
+  font-weight: 700;
+  color: #175cd3;
+}
+
+.coldstart-track {
+  height: 5px;
+  border-radius: 999px;
+  background: #dfe9f7;
+  overflow: hidden;
+}
+
+.coldstart-fill {
+  height: 100%;
+  border-radius: 999px;
+  background: #175cd3;
+  transition: width 280ms ease;
+}
+
+.coldstart-note {
+  color: var(--text-muted);
+  font-size: 11px;
 }
 
 @media (max-width: 980px) {

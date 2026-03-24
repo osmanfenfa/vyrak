@@ -2,25 +2,35 @@
 Machine learning training, evaluation, and lifecycle management layer.
 """
 
-from ml.trainer import ModelTrainer, TrainingResult
-from ml.evaluator import ModelEvaluator, EvaluationReport
-from ml.adversarial import AdversarialTrainer, AdversarialConfig
-from ml.feature_store import FeatureStore, FeatureRecord
-from ml.registry import ModelRegistry, ModelVersion, ModelState
+from importlib import import_module
 
-__all__ = [
-    "ModelTrainer",
-    "TrainingResult",
-    "ModelEvaluator",
-    "EvaluationReport",
-    "AdversarialTrainer",
-    "AdversarialConfig",
-    "FeatureStore",
-    "FeatureRecord",
-    "ModelRegistry",
-    "ModelVersion",
-    "ModelState",
-]
+_EXPORT_MAP = {
+    "ModelTrainer": ("ml.trainer", "ModelTrainer"),
+    "TrainingResult": ("ml.trainer", "TrainingResult"),
+    "ModelEvaluator": ("ml.evaluator", "ModelEvaluator"),
+    "EvaluationReport": ("ml.evaluator", "EvaluationReport"),
+    "AdversarialTrainer": ("ml.adversarial", "AdversarialTrainer"),
+    "AdversarialConfig": ("ml.adversarial", "AdversarialConfig"),
+    "FeatureStore": ("ml.feature_store", "FeatureStore"),
+    "FeatureRecord": ("ml.feature_store", "FeatureRecord"),
+    "ModelRegistry": ("ml.registry", "ModelRegistry"),
+    "ModelVersion": ("ml.registry", "ModelVersion"),
+    "ModelState": ("ml.registry", "ModelState"),
+}
+
+__all__ = list(_EXPORT_MAP.keys())
+
+
+def __getattr__(name):
+    if name not in _EXPORT_MAP:
+        raise AttributeError(f"module 'ml' has no attribute {name!r}")
+
+    module_name, attr_name = _EXPORT_MAP[name]
+    module = import_module(module_name)
+    value = getattr(module, attr_name)
+    globals()[name] = value
+    return value
+
 
 __version__ = "2.0.0"
-__author__  = "Vyrak"
+__author__ = "Vyrak"
