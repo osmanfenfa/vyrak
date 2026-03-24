@@ -1,29 +1,11 @@
 """
-zelvryn/api/routers/shadow.py
-===============================
 Shadow mode ingestion and training data export endpoints.
-
-Endpoints
----------
-  POST /shadow/ingest   — Process a batch of historical action events in
-                          shadow mode (evaluate, log, no enforcement)
-  GET  /shadow/export   — Export shadow session logs as training datasets
-  GET  /shadow/stats    — Shadow session statistics summary
-  POST /shadow/verify   — Set an analyst-verified label on a log entry
-
-These endpoints are used during the initial deployment phase (shadow mode
-weeks 1-4) and by the security analyst team for ongoing model maintenance.
-
-Author : Vyrak
-System : Zelvryn — Adaptive Behavioral Signature Authentication
-Version: 2.0
 """
 
 import logging
 import os
 import time
 from typing import Annotated, Optional
-
 from fastapi import APIRouter, Depends, HTTPException, Query, Request, status
 
 from api.dependencies import (
@@ -56,16 +38,11 @@ router = APIRouter(
     },
 )
 
-# In-memory shadow session storage: {session_id: ShadowModeLogger}
 _shadow_loggers: dict = {}
 
 # Default export directory
 _EXPORT_DIR = os.environ.get("SHADOW_EXPORT_DIR", "data/shadow_exports")
 
-
-# ─────────────────────────────────────────────────────────────────────────────
-# POST /shadow/ingest
-# ─────────────────────────────────────────────────────────────────────────────
 
 @router.post(
     "/ingest",
@@ -74,9 +51,7 @@ _EXPORT_DIR = os.environ.get("SHADOW_EXPORT_DIR", "data/shadow_exports")
     summary="Ingest a batch of events in shadow mode",
     description=(
         "Processes a batch of historical action events through the full Zelvryn "
-        "evaluation pipeline without enforcing any decisions. All evaluation "
-        "results are logged for later export as training data. "
-        "Admin role required."
+        "evaluation pipeline without enforcing any decisions."
     ),
 )
 async def shadow_ingest(
@@ -85,11 +60,7 @@ async def shadow_ingest(
     admin_user: Annotated[str, Depends(require_admin)],
     _rate:      Annotated[None, Depends(rate_limit_check)] = None,
 ) -> ShadowIngestResponse:
-    """
-    Process a batch of action events through the shadow evaluation stack.
-    """
     t_start = time.time()
-
     profile_store = get_profile_store(request)
     processed = errors = blocks = challenges = 0
 
@@ -113,7 +84,6 @@ async def shadow_ingest(
                 metadata    = event.get("metadata", {}),
             )
 
-            # Load or create profile
             try:
                 profile = profile_store.get_or_create(user_id)
             except Exception:
@@ -134,12 +104,10 @@ async def shadow_ingest(
             else:
                 shadow_logger = _shadow_loggers[session_id]
 
-            # Evaluate silently
             result = shadow_logger.evaluate_silently(action)
 
             # Track real decisions (even though not enforced)
             real_decision = result.anomalies[0] if result.anomalies else "ALLOW"
-            # The real decision is stored in the shadow log entry
             if shadow_logger._log:
                 last_entry = shadow_logger._log[-1]
                 if last_entry.real_decision == "BLOCK":
@@ -159,7 +127,6 @@ async def shadow_ingest(
             errors += 1
             logger.debug("Shadow ingest event error: %s", e)
 
-    # Export if requested
     export_path = None
     if body.export_results:
         try:
@@ -191,10 +158,6 @@ async def shadow_ingest(
     )
 
 
-# ─────────────────────────────────────────────────────────────────────────────
-# GET /shadow/export
-# ─────────────────────────────────────────────────────────────────────────────
-
 @router.get(
     "/export",
     response_model=ShadowExportResponse,
@@ -203,7 +166,6 @@ async def shadow_ingest(
     description=(
         "Exports all accumulated shadow session logs as a labeled training dataset. "
         "The output can be used directly with ModelTrainer.train_from_files(). "
-        "Admin role required."
     ),
 )
 async def export_shadow_data(
@@ -222,12 +184,9 @@ async def export_shadow_data(
             status_code=status.HTTP_404_NOT_FOUND,
             detail=(
                 "No shadow sessions found. "
-                "Ingest data first via POST /shadow/ingest or run with "
-                "SHADOW_MODE_ENABLED=true."
             ),
         )
 
-    # Select loggers to export
     if session_id:
         if session_id not in _shadow_loggers:
             raise HTTPException(
@@ -238,7 +197,6 @@ async def export_shadow_data(
     else:
         loggers_to_export = dict(_shadow_loggers)
 
-    # Aggregate all entries
     all_entries: list = []
     for sid, sl in loggers_to_export.items():
         entries = sl.log_entries
@@ -282,10 +240,6 @@ async def export_shadow_data(
         format         = format,
     )
 
-
-# ─────────────────────────────────────────────────────────────────────────────
-# GET /shadow/stats
-# ─────────────────────────────────────────────────────────────────────────────
 
 @router.get(
     "/stats",
@@ -336,10 +290,6 @@ async def shadow_stats(
     }
 
 
-# ─────────────────────────────────────────────────────────────────────────────
-# POST /shadow/verify
-# ─────────────────────────────────────────────────────────────────────────────
-
 @router.post(
     "/verify",
     status_code=status.HTTP_200_OK,
@@ -347,7 +297,6 @@ async def shadow_stats(
     description=(
         "Allows a security analyst to override the heuristic label on a "
         "shadow log entry with a verified ground-truth label. "
-        "Verified labels take priority in ML training. Admin role required."
     ),
 )
 async def verify_shadow_entry(

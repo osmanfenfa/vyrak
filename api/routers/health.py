@@ -1,32 +1,8 @@
-"""
-zelvryn/api/routers/health.py
-===============================
-System health and observability endpoints.
-
-Endpoints
----------
-  GET /health           — Overall system health (API + Redis + ML + DB)
-  GET /health/model     — Model registry status, active/canary versions, metrics
-  GET /health/redis     — Redis connection and memory statistics
-  GET /health/ready     — Kubernetes readiness probe (minimal check)
-  GET /health/live      — Kubernetes liveness probe (always 200 if server is up)
-
-These endpoints are intentionally not authenticated — they must be accessible
-by load balancers, Kubernetes probes, and monitoring systems without credentials.
-They never return user data or internal configuration.
-
-Author : Vyrak
-System : Zelvryn — Adaptive Behavioral Signature Authentication
-Version: 2.0
-"""
-
 import logging
 import time
 from typing import Dict
-
 from fastapi import APIRouter, Request, status
 from fastapi.responses import JSONResponse
-
 from api.schemas import (
     ComponentStatus,
     HealthResponse,
@@ -41,13 +17,7 @@ router = APIRouter(
     tags=["Health"],
 )
 
-# API version string
 _API_VERSION = "2.0.0"
-
-
-# ─────────────────────────────────────────────────────────────────────────────
-# GET /health
-# ─────────────────────────────────────────────────────────────────────────────
 
 @router.get(
     "",
@@ -63,8 +33,6 @@ _API_VERSION = "2.0.0"
 async def health_check(request: Request) -> HealthResponse:
     """
     Comprehensive health check for all system components.
-
-    Performs live connectivity checks against Redis and the model registry.
     """
     start_time = getattr(request.app.state, "start_time", time.time())
     uptime_s   = time.time() - start_time
@@ -72,28 +40,27 @@ async def health_check(request: Request) -> HealthResponse:
     components: Dict[str, ComponentStatus] = {}
     overall_ok = True
 
-    # ── Check Redis ────────────────────────────────────────────────────────
+    # Check Redis
     profile_store = getattr(request.app.state, "profile_store", None)
     redis_status  = _check_redis(profile_store)
     components["redis"] = redis_status
     if redis_status.status == "down":
         overall_ok = False
 
-    # ── Check ML Registry ─────────────────────────────────────────────────
+    # Check ML Registry
     model_registry = getattr(request.app.state, "model_registry", None)
     ml_status      = _check_model_registry(model_registry)
     components["model_registry"] = ml_status
-    # Model registry degraded is not a critical failure — engine can run
-    # rule-based detection without a classifier
+    # Model registry degraded is not a critical failure — engine can run rule-based detection without a classifier
 
-    # ── Check Session Engine ──────────────────────────────────────────────
+    # Check Session Engine
     active_sessions = get_active_session_count()
     components["session_engine"] = ComponentStatus(
         status  = "healthy",
         details = f"{active_sessions} active sessions",
     )
 
-    # ── Check Population Prior ────────────────────────────────────────────
+    # Check Population Prior
     prior = getattr(request.app.state, "population_prior", None)
     if prior is not None:
         stale = prior.is_stale() if hasattr(prior, "is_stale") else False
@@ -112,7 +79,6 @@ async def health_check(request: Request) -> HealthResponse:
 
     overall_status = "healthy" if overall_ok else "degraded"
     http_status    = status.HTTP_200_OK if overall_ok else status.HTTP_503_SERVICE_UNAVAILABLE
-
     response_body = HealthResponse(
         status      = overall_status,
         version     = _API_VERSION,
@@ -127,10 +93,6 @@ async def health_check(request: Request) -> HealthResponse:
         status_code = http_status,
     )
 
-
-# ─────────────────────────────────────────────────────────────────────────────
-# GET /health/model
-# ─────────────────────────────────────────────────────────────────────────────
 
 @router.get(
     "/model",
@@ -178,10 +140,6 @@ async def model_health(request: Request) -> ModelHealthResponse:
     )
 
 
-# ─────────────────────────────────────────────────────────────────────────────
-# GET /health/redis
-# ─────────────────────────────────────────────────────────────────────────────
-
 @router.get(
     "/redis",
     status_code=status.HTTP_200_OK,
@@ -219,10 +177,6 @@ async def redis_health(request: Request) -> dict:
         }
 
 
-# ─────────────────────────────────────────────────────────────────────────────
-# GET /health/ready  (Kubernetes readiness probe)
-# ─────────────────────────────────────────────────────────────────────────────
-
 @router.get(
     "/ready",
     status_code=status.HTTP_200_OK,
@@ -258,10 +212,6 @@ async def readiness_probe(request: Request):
     return {"ready": True}
 
 
-# ─────────────────────────────────────────────────────────────────────────────
-# GET /health/live  (Kubernetes liveness probe)
-# ─────────────────────────────────────────────────────────────────────────────
-
 @router.get(
     "/live",
     status_code=status.HTTP_200_OK,
@@ -276,10 +226,7 @@ async def liveness_probe():
     return {"alive": True, "timestamp": time.time()}
 
 
-# ─────────────────────────────────────────────────────────────────────────────
 # HELPER FUNCTIONS
-# ─────────────────────────────────────────────────────────────────────────────
-
 def _check_redis(profile_store) -> ComponentStatus:
     """Perform a live Redis health check."""
     if profile_store is None:

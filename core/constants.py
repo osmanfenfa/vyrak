@@ -1,12 +1,3 @@
-"""
-OVERRIDING VIA ENVIRONMENT VARIABLES
---------------------------------------
-Each constant reads from its matching environment variable if present,
-and falls back to the documented default otherwise.  Example:
-
-    ML_BOT_CONFIDENCE_THRESH=0.82 uvicorn api.main:app
-"""
-
 import os
 from typing import Final
 
@@ -108,8 +99,7 @@ Dimensionality of the feature vector produced by FeatureExtractor.
 
 ML_MIN_TRAIN_SAMPLES: Final[int] = _int("ML_MIN_TRAIN_SAMPLES", 40)
 """
-Minimum number of labeled training samples required before the first
-model training cycle runs.
+Minimum number of labeled training samples required before the first model training cycle runs.
 """
 
 ML_NUM_TREES: Final[int] = _int("ML_NUM_TREES", 15)
@@ -120,7 +110,6 @@ Number of decision trees in the Random Forest ensemble.
 ML_MAX_DEPTH: Final[int] = _int("ML_MAX_DEPTH", 6)
 """
 Maximum depth of each decision tree.
-Deeper trees overfit; shallower trees underfit.
 """
 
 ML_MIN_SAMPLES_SPLIT: Final[int] = _int("ML_MIN_SAMPLES_SPLIT", 4)
@@ -131,8 +120,7 @@ Minimum number of samples required to split an internal tree node.
 ML_BOT_CONFIDENCE_THRESH: Final[float] = _float("ML_BOT_CONFIDENCE_THRESH", 0.78)
 """
 P(bot) threshold above which the ML classifier fires an ML_BOT_DETECTED
-anomaly.  0.78 means the forest must be at least 78% confident that
-the current window was produced by a bot.
+anomaly.
 """
 
 ML_RETRAIN_INTERVAL: Final[int] = _int("ML_RETRAIN_INTERVAL", 50)
@@ -164,8 +152,7 @@ Minimum window fill before ML inference is activated.
 
 EWMA_DECAY_FACTOR: Final[float] = _float("EWMA_DECAY_FACTOR", 0.95)
 """
-Exponentially Weighted Moving Average decay factor (lambda).
-Applied to profile statistics to handle legitimate behaviour drift.
+Exponentially Weighted Moving Average decay factor (lambda). Applied to profile statistics to handle legitimate behaviour drift.
 """
 
 PROFILE_TTL_DAYS: Final[int] = _int("PROFILE_TTL_DAYS", 90)
@@ -230,24 +217,20 @@ Number of recorded profile actions between adaptive threshold recomputations.
 
 SHARED_DEVICE_SILHOUETTE_MIN: Final[float] = _float("SHARED_DEVICE_SILHOUETTE_MIN", 0.45)
 """
-Minimum silhouette score for the k=2 cluster solution before a profile
-is flagged as a shared-device account.
+Minimum silhouette score for the k=2 cluster solution before a profile is flagged as a shared-device account.
 """
 
 # FEATURE EXTRACTION INTERNALS
-
 BURST_INTERVAL_THRESHOLD: Final[float] = _float("BURST_INTERVAL_THRESHOLD", 0.5)
 """
-Inter-action interval (seconds) below which an action is counted as
-part of a burst.  Used when computing burst_score (feature [17]).
+Inter-action interval (seconds) below which an action is counted as part of a burst.
 """
 
 SENSITIVE_ACTION_TYPES: Final[frozenset] = frozenset(
     {"delete", "export", "admin", "config"}
 )
 """
-The set of action types considered 'sensitive' for feature [14]
-(sensitive_prop). 
+The set of action types considered 'sensitive' for feature [14] (sensitive_prop). 
 """
 
 AUTOCORR_MIN_WINDOW: Final[int] = _int("AUTOCORR_MIN_WINDOW", 3)
@@ -262,27 +245,20 @@ Minimum number of intervals before the Q1/Q3 quantile ratio is computed.
 
 DEFAULT_TIMING_MEAN: Final[float] = _float("DEFAULT_TIMING_MEAN", 5.0)
 """
-Default mean inter-action interval (seconds) used when a profile has
-fewer than 2 recorded intervals — i.e., not enough data for statistics.
+Default mean inter-action interval (seconds) used when a profile has fewer than 2 recorded intervals — i.e., not enough data for statistics.
 """
 
 DEFAULT_TIMING_STDEV: Final[float] = _float("DEFAULT_TIMING_STDEV", 3.0)
 """
-Default standard deviation of inter-action intervals used when a profile
-has fewer than 2 recorded intervals.
+Default standard deviation of inter-action intervals used when a profile has fewer than 2 recorded intervals.
 """
 
 TEMPORAL_DEFAULT_MEAN: Final[float] = DEFAULT_TIMING_MEAN
 TEMPORAL_DEFAULT_STDEV: Final[float] = DEFAULT_TIMING_STDEV
-
 EWMA_MIN_OBSERVATIONS: Final[int] = _int("EWMA_MIN_OBSERVATIONS", 20)
-
-# DECISION LABELS  (string constants used in response dicts)
-
 DECISION_ALLOW:     Final[str] = "ALLOW"
 DECISION_CHALLENGE: Final[str] = "CHALLENGE"
 DECISION_BLOCK:     Final[str] = "BLOCK"
-
 ANOMALY_LOW_SIMILARITY:       Final[str] = "LOW_SIMILARITY"
 ANOMALY_HIGH_ENTROPY:         Final[str] = "HIGH_ENTROPY"
 ANOMALY_TEMPORAL_DRIFT:       Final[str] = "TEMPORAL_DRIFT"

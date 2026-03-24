@@ -1,76 +1,22 @@
-"""
-zelvryn/api/main.py
-====================
-FastAPI application factory for the Zelvryn ABSA API.
-
-The entry point for the API server. Uvicorn starts here:
-  uvicorn api.main:app --host 0.0.0.0 --port 8000 --workers 4
-
-Or in development with auto-reload:
-  uvicorn api.main:app --reload --log-level debug
-
-Application structure
-----------------------
-  create_app()   — factory function that builds and returns the FastAPI instance
-  lifespan()     — async context manager that runs startup and shutdown logic
-  app            — the default app instance (used by uvicorn directly)
-
-Startup sequence (inside lifespan)
-------------------------------------
-  1. Configure logging
-  2. Connect to Redis and initialise RedisProfileStore
-  3. Load ModelRegistry (from models/model_registry.json)
-  4. Load active model into memory
-  5. Initialise FeatureStore
-  6. Load PopulationPriorProfile (from data/processed/population_prior.json)
-  7. Initialise DeviceSignalBridge
-  8. Set app.state.shadow_mode from env
-  9. Store start_time for uptime calculation
-
-All infrastructure objects are stored on app.state so they are accessible
-to dependency injection functions in dependencies.py without module-level
-globals or circular imports.
-
-Author : Vyrak
-System : Zelvryn — Adaptive Behavioral Signature Authentication
-Version: 2.0
-"""
-
 import logging
 import logging.config
 import os
 import time
 from contextlib import asynccontextmanager
 from typing import AsyncGenerator
-
 from fastapi import FastAPI, Request, status
 from fastapi.exceptions import RequestValidationError
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
-
 from api.middleware import register_middleware
 from api.routers import include_routers
 from api.schemas import ErrorResponse, ValidationErrorResponse
 from core.constants import SHADOW_MODE_ENABLED, LOG_LEVEL
-
 logger = logging.getLogger(__name__)
 
 
-# ─────────────────────────────────────────────────────────────────────────────
 # LOGGING CONFIGURATION
-# ─────────────────────────────────────────────────────────────────────────────
-
 def _configure_logging() -> None:
-    """
-    Configure structured logging for the API server.
-
-    Uses a two-handler setup:
-      - console: human-readable format for development
-      - audit: JSON format for the audit logger (writes to logs/audit.jsonl)
-
-    In production, replace the console handler with a JSON formatter
-    for ingestion by log aggregators (Datadog, ELK, CloudWatch).
-    """
     log_config = {
         "version":    1,
         "disable_existing_loggers": False,
@@ -104,19 +50,9 @@ def _configure_logging() -> None:
     logging.config.dictConfig(log_config)
 
 
-# ─────────────────────────────────────────────────────────────────────────────
 # LIFESPAN (STARTUP + SHUTDOWN)
-# ─────────────────────────────────────────────────────────────────────────────
-
 @asynccontextmanager
 async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
-    """
-    Manage application startup and shutdown resources.
-
-    Everything before `yield` runs at startup.
-    Everything after `yield` runs at shutdown.
-    """
-    # ── Startup ────────────────────────────────────────────────────────────
     _configure_logging()
     logger.info("=" * 60)
     logger.info("Zelvryn ABSA API v2.0 — starting up")
@@ -124,7 +60,6 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
 
     app.state.start_time = time.time()
 
-    # Shadow mode flag
     app.state.shadow_mode = (
         os.environ.get("SHADOW_MODE_ENABLED", "false").lower() == "true"
         or SHADOW_MODE_ENABLED
@@ -134,7 +69,7 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
             "SHADOW MODE ENABLED — evaluations are logged but NOT enforced."
         )
 
-    # ── Redis / Profile Store ──────────────────────────────────────────────
+    # Redis / Profile Store
     try:
         from profiles.redis_store import RedisProfileStore
 
@@ -164,7 +99,7 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
         logger.warning("profiles.redis_store not available. Profiles will not persist.")
         app.state.profile_store = None
 
-    # ── Model Registry ────────────────────────────────────────────────────
+    # Model Registry
     try:
         from ml.registry import ModelRegistry
 
@@ -193,7 +128,6 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
         logger.warning("ml.registry not available. Running rule-based detection only.")
         app.state.model_registry = None
 
-    # ── Feature Store ──────────────────────────────────────────────────────
     try:
         from ml.feature_store import FeatureStore
 
@@ -207,7 +141,6 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
         logger.warning("ml.feature_store not available.")
         app.state.feature_store = None
 
-    # ── Population Prior ───────────────────────────────────────────────────
     try:
         from coldstart.population_prior import PopulationPriorProfile
 
@@ -229,7 +162,6 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
         logger.warning("coldstart.population_prior not available.")
         app.state.population_prior = None
 
-    # ── Device Signal Bridge ───────────────────────────────────────────────
     try:
         from coldstart.device_signals import DeviceSignalBridge
 
@@ -241,16 +173,13 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
         logger.warning("coldstart.device_signals not available.")
         app.state.device_bridge = None
 
-    # ── Ready ──────────────────────────────────────────────────────────────
     startup_ms = (time.time() - app.state.start_time) * 1000
     logger.info(
         "Zelvryn API ready in %.0f ms — shadow=%s",
         startup_ms, app.state.shadow_mode
     )
 
-    yield   # ← Application runs here
-
-    # ── Shutdown ───────────────────────────────────────────────────────────
+    yield 
     logger.info("Zelvryn API shutting down...")
 
     uptime = time.time() - app.state.start_time
@@ -258,21 +187,7 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
     logger.info("Shutdown complete.")
 
 
-# ─────────────────────────────────────────────────────────────────────────────
-# APPLICATION FACTORY
-# ─────────────────────────────────────────────────────────────────────────────
-
 def create_app() -> FastAPI:
-    """
-    Build and return the configured FastAPI application.
-
-    This is the factory function — call it to create a fresh app instance.
-    The module-level `app` variable calls this at import time for uvicorn.
-
-    Returns
-    -------
-    FastAPI
-    """
     app = FastAPI(
         title       = "Zelvryn — Adaptive Behavioral Signature Authentication",
         description = (
@@ -292,7 +207,6 @@ def create_app() -> FastAPI:
         },
     )
 
-    # ── CORS ───────────────────────────────────────────────────────────────
     cors_origins_raw = os.environ.get(
         "CORS_ORIGINS",
         "http://localhost:3000,http://localhost:5173"
@@ -313,13 +227,8 @@ def create_app() -> FastAPI:
         ],
     )
 
-    # ── Custom middleware stack ────────────────────────────────────────────
     register_middleware(app)
-
-    # ── Routers ────────────────────────────────────────────────────────────
     include_routers(app)
-
-    # ── Root redirect ──────────────────────────────────────────────────────
     @app.get("/", include_in_schema=False)
     async def root():
         return {
@@ -329,17 +238,13 @@ def create_app() -> FastAPI:
             "health":      "/health",
             "description": "Adaptive Behavioral Signature Authentication",
         }
-
-    # ── Exception handlers ─────────────────────────────────────────────────
+        
     _register_exception_handlers(app)
 
     return app
 
 
-# ─────────────────────────────────────────────────────────────────────────────
 # EXCEPTION HANDLERS
-# ─────────────────────────────────────────────────────────────────────────────
-
 def _register_exception_handlers(app: FastAPI) -> None:
     """Register global exception handlers for consistent error response format."""
 
@@ -397,12 +302,4 @@ def _register_exception_handlers(app: FastAPI) -> None:
                 request_id = request_id,
             ).model_dump(),
         )
-
-
-# ─────────────────────────────────────────────────────────────────────────────
-# DEFAULT APP INSTANCE
-# ─────────────────────────────────────────────────────────────────────────────
-
-# Module-level app instance for uvicorn:
-#   uvicorn api.main:app --host 0.0.0.0 --port 8000
 app = create_app()

@@ -1,33 +1,12 @@
 """
-zelvryn/api/routers/sessions.py
-=================================
 Session management endpoints — the core evaluation surface of the Zelvryn API.
-
-Endpoints
----------
-  POST   /session/start                     — Begin a new authenticated session
-  POST   /session/{session_id}/action       — Evaluate a user action (hot path)
-  POST   /session/{session_id}/restore-trust — Restore trust after re-auth
-  GET    /session/{session_id}/summary      — Full session report
-  DELETE /session/{session_id}              — End and archive a session
-
-The action evaluation endpoint (POST .../action) is the hot path — it is called
-for every protected operation in the host application. Target latency is < 50ms
-at p95. All heavy computation (ML inference, Redis writes) happens within
-evaluate_action() in core/engine.py.
-
-Author : Vyrak
-System : Zelvryn — Adaptive Behavioral Signature Authentication
-Version: 2.0
 """
 
 import logging
 import time
 import uuid
 from typing import Annotated
-
 from fastapi import APIRouter, Depends, HTTPException, Request, status
-
 from api.dependencies import (
     get_current_user,
     get_device_bridge,
@@ -65,10 +44,6 @@ router = APIRouter(
 )
 
 
-# ─────────────────────────────────────────────────────────────────────────────
-# POST /session/start
-# ─────────────────────────────────────────────────────────────────────────────
-
 @router.post(
     "/start",
     response_model=SessionStartResponse,
@@ -88,9 +63,6 @@ async def start_session(
 ) -> SessionStartResponse:
     """
     Initialise a Zelvryn evaluation session for an authenticated user.
-
-    The session_id returned here must be stored by the host application and
-    passed to every subsequent POST /session/{session_id}/action call.
     """
     session_id = str(uuid.uuid4())
 
@@ -107,13 +79,9 @@ async def start_session(
             longitude  = meta.longitude,
         )
 
-    # Create the engine (loads profile from Redis, attaches classifier)
     engine = get_or_create_engine(session_id, user_id, request)
-
-    # Store user_id in request state for logging/audit
     request.state.user_id    = user_id
     request.state.session_id = session_id
-
     shadow_mode  = getattr(request.app.state, "shadow_mode", False)
     ramp_active  = not engine.profile.is_mature()
 
@@ -131,10 +99,6 @@ async def start_session(
         started_at  = time.time(),
     )
 
-
-# ─────────────────────────────────────────────────────────────────────────────
-# POST /session/{session_id}/action
-# ─────────────────────────────────────────────────────────────────────────────
 
 @router.post(
     "/{session_id}/action",
@@ -156,15 +120,6 @@ async def evaluate_action(
 ) -> DecisionResponse:
     """
     Evaluate a single user action against the session's behavioural profile.
-
-    Runs the full ABSA v2 pipeline:
-      1. Rule-based checks (cosine similarity, entropy, temporal Z-score)
-      2. ML classifier inference (P(bot) from Random Forest)
-      3. Dual-signal fusion
-      4. Trust score update
-      5. Decision determination
-
-    CHALLENGE and BLOCK decisions are written to the audit log by AuditMiddleware.
     """
     engine = get_engine_for_session(session_id, request)
 
@@ -192,8 +147,7 @@ async def evaluate_action(
 
     # Evaluate
     result = engine.evaluate_action(action)
-
-    # Persist updated profile back to Redis (best-effort, non-blocking)
+    
     profile_store = get_profile_store(request)
     try:
         profile_store.save(user_id, engine.profile)
@@ -231,10 +185,6 @@ async def evaluate_action(
         timestamp   = result.timestamp,
     )
 
-
-# ─────────────────────────────────────────────────────────────────────────────
-# POST /session/{session_id}/restore-trust
-# ─────────────────────────────────────────────────────────────────────────────
 
 @router.post(
     "/{session_id}/restore-trust",
@@ -278,7 +228,6 @@ async def restore_trust(
     except Exception as e:
         logger.warning("Profile save failed after trust restore: %s", e)
 
-    # Build a minimal result using the current engine state
     return DecisionResponse(
         decision    = engine._compute_decision(),
         trust_score = engine.trust_score,
@@ -293,10 +242,6 @@ async def restore_trust(
         timestamp   = time.time(),
     )
 
-
-# ─────────────────────────────────────────────────────────────────────────────
-# GET /session/{session_id}/summary
-# ─────────────────────────────────────────────────────────────────────────────
 
 @router.get(
     "/{session_id}/summary",
@@ -393,10 +338,6 @@ async def get_session_summary(
     )
 
 
-# ─────────────────────────────────────────────────────────────────────────────
-# DELETE /session/{session_id}
-# ─────────────────────────────────────────────────────────────────────────────
-
 @router.delete(
     "/{session_id}",
     response_model=SessionDeleteResponse,
@@ -404,7 +345,6 @@ async def get_session_summary(
     summary="End and archive a session",
     description=(
         "Ends the session, saves the final profile state to Redis, "
-        "and removes the engine from the in-memory cache."
     ),
 )
 async def delete_session(
@@ -440,7 +380,6 @@ async def delete_session(
             session_id, e
         )
 
-    # Remove from cache
     close_session_engine(session_id)
 
     # Audit

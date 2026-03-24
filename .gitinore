@@ -1,0 +1,15 @@
+dashboard/node_modules/
+dashboard/dist/
+dashboard/.vite/
+virake/
+
+data/raw/
+data/processed/
+data/shadow_exports/
+data/synthetic/*.npy
+
+models/*
+!models/model_registry.json
+
+.env
+.env.*

@@ -1,52 +1,9 @@
-"""
-zelvryn/api/dependencies.py
-=============================
-FastAPI dependency injection providers for the Zelvryn API.
-
-Every non-trivial piece of infrastructure used by route handlers is provided
-through FastAPI's dependency injection system rather than imported as a module-
-level singleton. This gives:
-
-  - Clean testability: replace any dependency with a mock by overriding it
-    in the test client's dependency_overrides dict.
-  - Lifecycle management: resources that require setup/teardown are managed
-    by the app lifespan context manager in main.py.
-  - No circular imports: routes depend on dependency functions, not on each
-    other.
-
-Dependency graph
------------------
-  get_profile_store   → RedisProfileStore (shared singleton via app state)
-  get_model_registry  → ModelRegistry     (shared singleton via app state)
-  get_feature_store   → FeatureStore      (shared singleton via app state)
-  get_population_prior→ PopulationPriorProfile (loaded once at startup)
-  get_session_engine  → ABSAv2Engine (per-session, from profile store + registry)
-  get_current_user    → authenticated user_id from JWT Bearer token
-  require_admin       → user_id with admin role claim
-  rate_limit_check    → per-IP sliding window rate limiter
-
-Application state keys (set in main.py lifespan)
---------------------------------------------------
-  app.state.profile_store    : RedisProfileStore
-  app.state.model_registry   : ModelRegistry
-  app.state.feature_store    : FeatureStore
-  app.state.population_prior : PopulationPriorProfile
-  app.state.device_bridge    : DeviceSignalBridge
-  app.state.start_time       : float (for uptime calculation)
-
-Author : Vyrak
-System : Zelvryn — Adaptive Behavioral Signature Authentication
-Version: 2.0
-"""
-
 import logging
 import time
 import uuid
 from typing import Annotated, Dict, Optional, Tuple
-
 from fastapi import Depends, Header, HTTPException, Request, status
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
-
 from core.action import UserAction
 from core.engine import ABSAv2Engine
 from core.profile import BehavioralProfile
@@ -54,9 +11,7 @@ from core.constants import SHADOW_MODE_ENABLED
 
 logger = logging.getLogger(__name__)
 
-# ─────────────────────────────────────────────────────────────────────────────
 # BEARER TOKEN AUTHENTICATION
-# ─────────────────────────────────────────────────────────────────────────────
 
 _bearer_scheme = HTTPBearer(auto_error=False)
 
@@ -75,24 +30,6 @@ def get_current_user(
       1. Decode and verify the JWT using the configured secret/public key
       2. Check expiry and issuer claims
       3. Return the 'sub' claim as user_id
-
-    For this implementation, we provide a complete JWT validation path
-    using PyJWT when available, with a graceful fallback for development.
-
-    Parameters
-    ----------
-    request : Request
-    credentials : HTTPAuthorizationCredentials
-
-    Returns
-    -------
-    str
-        The authenticated user_id (JWT 'sub' claim).
-
-    Raises
-    ------
-    HTTPException 401
-        If the token is missing, expired, or invalid.
     """
     if credentials is None:
         raise HTTPException(
@@ -102,8 +39,6 @@ def get_current_user(
         )
 
     token = credentials.credentials
-
-    # Try PyJWT validation
     try:
         import jwt
         from config.settings import settings
@@ -153,28 +88,9 @@ def require_admin(
 ) -> str:
     """
     Extend get_current_user to require the 'admin' role.
-
-    In production, the JWT should contain a 'roles' claim. This function
-    checks for 'admin' in that list. Falls back to allowing all authenticated
-    users in development (when JWT is not fully configured).
-
-    Parameters
-    ----------
-    user_id : str
-    request : Request
-
-    Returns
-    -------
-    str
-        The admin user_id.
-
-    Raises
-    ------
-    HTTPException 403
-        If the user does not have the admin role.
     """
     # Check request state for role info (populated by JWT decode in production)
-    roles = getattr(request.state, "roles", ["admin"])  # dev: grant all
+    roles = getattr(request.state, "roles", ["admin"])
     if "admin" not in roles:
         raise HTTPException(
             status_code=status.HTTP_403_FORBIDDEN,
@@ -183,26 +99,9 @@ def require_admin(
     return user_id
 
 
-# ─────────────────────────────────────────────────────────────────────────────
-# INFRASTRUCTURE DEPENDENCIES
-# ─────────────────────────────────────────────────────────────────────────────
-
 def get_profile_store(request: Request):
     """
     Provide the shared RedisProfileStore from application state.
-
-    Parameters
-    ----------
-    request : Request
-
-    Returns
-    -------
-    RedisProfileStore
-
-    Raises
-    ------
-    HTTPException 503
-        If the profile store is not initialised (startup failure).
     """
     store = getattr(request.app.state, "profile_store", None)
     if store is None:
@@ -255,13 +154,7 @@ def get_device_bridge(request: Request):
     return bridge  # None is acceptable — device signals are optional
 
 
-# ─────────────────────────────────────────────────────────────────────────────
 # SESSION ENGINE DEPENDENCY
-# ─────────────────────────────────────────────────────────────────────────────
-
-# In-memory session engine cache: {session_id: (ABSAv2Engine, last_active_ts)}
-# In production with multiple workers, this should be replaced with a Redis-
-# backed session store. For single-worker deployments this works fine.
 _session_cache: Dict[str, Tuple["ABSAv2Engine", float]] = {}
 _SESSION_CACHE_TTL: int = 3600   # 1 hour
 
@@ -273,20 +166,6 @@ def get_or_create_engine(
 ) -> ABSAv2Engine:
     """
     Return the ABSAv2Engine for a session, creating one if it does not exist.
-
-    Loads the user's BehavioralProfile from Redis, attaches the active model
-    from the registry, and caches the engine in memory for the duration of
-    the session.
-
-    Parameters
-    ----------
-    session_id : str
-    user_id : str
-    request : Request
-
-    Returns
-    -------
-    ABSAv2Engine
     """
     now = time.time()
 
@@ -355,23 +234,6 @@ def get_engine_for_session(
 ) -> ABSAv2Engine:
     """
     Return the engine for an existing session (no creation).
-
-    Used by action evaluation, summary, and delete endpoints where the
-    session must already exist.
-
-    Parameters
-    ----------
-    session_id : str
-    request : Request
-
-    Returns
-    -------
-    ABSAv2Engine
-
-    Raises
-    ------
-    HTTPException 404
-        If no engine is found for this session_id.
     """
     if session_id not in _session_cache:
         raise HTTPException(
@@ -389,14 +251,6 @@ def get_engine_for_session(
 def close_session_engine(session_id: str) -> Optional[ABSAv2Engine]:
     """
     Remove a session engine from the cache and return it for final processing.
-
-    Parameters
-    ----------
-    session_id : str
-
-    Returns
-    -------
-    ABSAv2Engine or None
     """
     if session_id in _session_cache:
         engine, _ = _session_cache.pop(session_id)
@@ -409,11 +263,9 @@ def get_active_session_count() -> int:
     return len(_session_cache)
 
 
-# ─────────────────────────────────────────────────────────────────────────────
 # RATE LIMITING
-# ─────────────────────────────────────────────────────────────────────────────
 
-# Sliding window rate limit store: {ip: [(timestamp, ...), ...]}
+# Sliding window rate limit store
 _rate_limit_store: Dict[str, list] = {}
 _RATE_LIMIT_WINDOW_S: int   = 60    # 1 minute window
 _RATE_LIMIT_MAX_REQUESTS: int = 300  # 300 requests per minute per IP
@@ -422,19 +274,6 @@ _RATE_LIMIT_MAX_REQUESTS: int = 300  # 300 requests per minute per IP
 def rate_limit_check(request: Request) -> None:
     """
     Enforce per-IP sliding window rate limiting.
-
-    Limits each IP to _RATE_LIMIT_MAX_REQUESTS requests per
-    _RATE_LIMIT_WINDOW_S seconds. Uses an in-memory store — in production
-    this should be backed by Redis for multi-worker correctness.
-
-    Parameters
-    ----------
-    request : Request
-
-    Raises
-    ------
-    HTTPException 429
-        If the IP has exceeded the rate limit.
     """
     client_ip = _get_client_ip(request)
     now       = time.time()
@@ -472,32 +311,17 @@ def rate_limit_check(request: Request) -> None:
     _rate_limit_store[client_ip].append(now)
 
 
-# ─────────────────────────────────────────────────────────────────────────────
 # REQUEST ID
-# ─────────────────────────────────────────────────────────────────────────────
-
 def get_request_id(
     x_request_id: Annotated[Optional[str], Header(alias="X-Request-ID")] = None,
 ) -> str:
     """
     Return the X-Request-ID header value, or generate a new UUID if absent.
-
-    Parameters
-    ----------
-    x_request_id : str, optional
-
-    Returns
-    -------
-    str
-        A unique request identifier for log correlation.
     """
     return x_request_id or str(uuid.uuid4())
 
 
-# ─────────────────────────────────────────────────────────────────────────────
 # HELPER UTILITIES
-# ─────────────────────────────────────────────────────────────────────────────
-
 def _get_client_ip(request: Request) -> str:
     """
     Extract the real client IP from the request, respecting reverse proxy headers.
@@ -517,15 +341,6 @@ def _get_client_ip(request: Request) -> str:
 def extract_metadata_from_request(request: Request) -> dict:
     """
     Build a metadata dict from request headers for device signal assessment.
-
-    Parameters
-    ----------
-    request : Request
-
-    Returns
-    -------
-    dict
-        Keys: ip, user_agent, (others if present in headers)
     """
     return {
         "ip":         _get_client_ip(request),

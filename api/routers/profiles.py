@@ -1,32 +1,11 @@
 """
-zelvryn/api/routers/profiles.py
-=================================
 Profile management endpoints for inspecting, resetting, and deleting user
 behavioural profiles.
-
-Endpoints
----------
-  GET    /profile/{user_id}         — Return profile statistics
-  DELETE /profile/{user_id}         — GDPR erasure — delete all data
-  POST   /profile/{user_id}/reset   — Reset profile to population prior or empty
-
-Access control
---------------
-  GET    — users can read their own profile; admins can read any profile
-  DELETE — users can delete their own profile; admins can delete any
-  POST   — admins only (profile resets are a security-sensitive operation)
-
-Author : Vyrak
-System : Zelvryn — Adaptive Behavioral Signature Authentication
-Version: 2.0
 """
-
 import logging
 import time
 from typing import Annotated
-
 from fastapi import APIRouter, Depends, HTTPException, Request, status
-
 from api.dependencies import (
     get_current_user,
     get_population_prior,
@@ -55,10 +34,6 @@ router = APIRouter(
 )
 
 
-# ─────────────────────────────────────────────────────────────────────────────
-# GET /profile/{user_id}
-# ─────────────────────────────────────────────────────────────────────────────
-
 @router.get(
     "/{user_id}",
     response_model=ProfileResponse,
@@ -81,7 +56,6 @@ async def get_profile(
     """
     # Access control: users can only read their own profile
     if current_user_id != user_id:
-        # Check if requester has admin role
         roles = getattr(request.state, "roles", [])
         if "admin" not in roles:
             raise HTTPException(
@@ -90,7 +64,6 @@ async def get_profile(
             )
 
     profile_store = get_profile_store(request)
-
     try:
         profile = profile_store.get(user_id)
     except Exception as e:
@@ -128,11 +101,6 @@ async def get_profile(
         profile_age_days    = round(age_days, 2),
     )
 
-
-# ─────────────────────────────────────────────────────────────────────────────
-# DELETE /profile/{user_id}
-# ─────────────────────────────────────────────────────────────────────────────
-
 @router.delete(
     "/{user_id}",
     response_model=ProfileDeleteResponse,
@@ -141,8 +109,6 @@ async def get_profile(
     description=(
         "Permanently deletes the user's behavioural profile and all associated "
         "data from Redis. This is the technical implementation of GDPR Article 17 "
-        "(right to erasure). Deletion is permanent and cannot be undone. "
-        "Users can delete their own profile; admins can delete any profile."
     ),
 )
 async def delete_profile(
@@ -152,14 +118,11 @@ async def delete_profile(
 ) -> ProfileDeleteResponse:
     """
     Delete a user's profile — GDPR right to erasure.
-
     All stored data is permanently removed:
       - BehavioralProfile (Redis)
-      - Feature vectors (FeatureStore — if accessible)
-      - Device history (DeviceSignalBridge — if accessible)
       - Consent records (ConsentGatedLogger — if applicable)
     """
-    # Access control
+    
     if current_user_id != user_id:
         roles = getattr(request.state, "roles", [])
         if "admin" not in roles:
@@ -182,7 +145,7 @@ async def delete_profile(
             detail="Profile store temporarily unavailable.",
         )
 
-    # Best-effort: delete from feature store
+    # Delete from feature store
     feature_store = getattr(request.app.state, "feature_store", None)
     if feature_store:
         try:
@@ -192,7 +155,7 @@ async def delete_profile(
                 "Feature store deletion failed: user=%s error=%s", user_id, e
             )
 
-    # Best-effort: clear device history
+    # Clear device history
     device_bridge = getattr(request.app.state, "device_bridge", None)
     if device_bridge:
         try:
@@ -223,10 +186,6 @@ async def delete_profile(
     )
 
 
-# ─────────────────────────────────────────────────────────────────────────────
-# POST /profile/{user_id}/reset
-# ─────────────────────────────────────────────────────────────────────────────
-
 @router.post(
     "/{user_id}/reset",
     response_model=ProfileResetResponse,
@@ -236,8 +195,6 @@ async def delete_profile(
         "Resets the user's behavioural profile to the population prior baseline, "
         "effectively restarting their cold start period. "
         "This is a security-sensitive operation — admin role required. "
-        "Use when a user reports persistent false positives after a major "
-        "role change or workflow shift."
     ),
 )
 async def reset_profile(
@@ -247,9 +204,6 @@ async def reset_profile(
 ) -> ProfileResetResponse:
     """
     Reset a user's profile to the population prior (admin operation).
-
-    The user is put back into cold start ramp-up mode. Their existing
-    training samples are preserved in the feature store.
     """
     profile_store    = get_profile_store(request)
     population_prior = get_population_prior(request)

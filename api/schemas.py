@@ -1,50 +1,19 @@
-"""
-zelvryn/api/schemas.py
-=======================
-Pydantic v2 request and response models for every Zelvryn API endpoint.
-
-Design principles
------------------
-  1. Every field has a type annotation, a description, and a sensible default
-     or explicit required marker. This drives auto-generated OpenAPI docs.
-  2. Request models validate on assignment so bad payloads are rejected at
-     the boundary before touching any business logic.
-  3. Response models are strict about which fields are exposed — internal
-     profile state (EWMA vectors, raw interval lists) is never serialised
-     to API responses.
-  4. Nested models are used for grouping (e.g. MetricsBlock inside
-     SessionSummaryResponse) to keep the top-level models readable.
-
-Author : Vyrak
-System : Zelvryn — Adaptive Behavioral Signature Authentication
-Version: 2.0
-"""
-
 from __future__ import annotations
-
 import time
 from enum import Enum
 from typing import Any, Dict, List, Optional
-
 from pydantic import BaseModel, Field, field_validator, model_validator
-
-
-# ─────────────────────────────────────────────────────────────────────────────
-# ENUMS
-# ─────────────────────────────────────────────────────────────────────────────
 
 class DecisionEnum(str, Enum):
     ALLOW     = "ALLOW"
     CHALLENGE = "CHALLENGE"
     BLOCK     = "BLOCK"
 
-
 class RiskLabelEnum(str, Enum):
     LOW      = "LOW RISK"
     MEDIUM   = "MEDIUM RISK"
     HIGH     = "HIGH RISK"
     CRITICAL = "CRITICAL RISK"
-
 
 class ActionTypeEnum(str, Enum):
     LOGIN  = "login"
@@ -56,17 +25,12 @@ class ActionTypeEnum(str, Enum):
     CONFIG = "config"
     ADMIN  = "admin"
 
-
 class ModelStateEnum(str, Enum):
     TRAINED  = "trained"
     CANARY   = "canary"
     ACTIVE   = "active"
     RETIRED  = "retired"
 
-
-# ─────────────────────────────────────────────────────────────────────────────
-# COMMON BUILDING BLOCKS
-# ─────────────────────────────────────────────────────────────────────────────
 
 class MetadataBlock(BaseModel):
     """Optional supplementary context attached to action events."""
@@ -80,11 +44,9 @@ class MetadataBlock(BaseModel):
 
     model_config = {"extra": "allow"}   # allow arbitrary metadata keys
 
-
 class FeatureImportanceItem(BaseModel):
     name:       str   = Field(..., description="Feature name")
     importance: float = Field(..., description="Normalised permutation importance score")
-
 
 class AnomalyEntry(BaseModel):
     """Single anomaly signal entry in a session log."""
@@ -96,16 +58,9 @@ class AnomalyEntry(BaseModel):
     decision:     str        = Field(..., description="Decision issued")
 
 
-# ─────────────────────────────────────────────────────────────────────────────
-# SESSION ENDPOINTS
-# ─────────────────────────────────────────────────────────────────────────────
-
 class SessionStartRequest(BaseModel):
     """
-    Request body for POST /session/start.
-
     Initiates a new authenticated session in the Zelvryn evaluation engine.
-    The user_id must correspond to an authenticated user in the host application.
     """
     user_id:    str  = Field(
         ...,
@@ -128,7 +83,6 @@ class SessionStartRequest(BaseModel):
 
 
 class SessionStartResponse(BaseModel):
-    """Response from POST /session/start."""
     session_id:      str   = Field(..., description="Unique session identifier to use in subsequent action calls.")
     user_id:         str   = Field(..., description="Echo of the requesting user_id.")
     trust_score:     float = Field(..., description="Initial trust score (always 100.0 for new sessions).")
@@ -139,10 +93,7 @@ class SessionStartResponse(BaseModel):
 
 class ActionRequest(BaseModel):
     """
-    Request body for POST /session/{session_id}/action.
-
-    The core evaluation endpoint. Every protected operation performed by
-    the user should trigger one call to this endpoint.
+    The core evaluation endpoint. Every protected operation performed by the user should trigger one call to this endpoint.
     """
     action_type:  ActionTypeEnum = Field(
         ...,
@@ -175,11 +126,7 @@ class ActionRequest(BaseModel):
 
 class DecisionResponse(BaseModel):
     """
-    Response from POST /session/{session_id}/action.
-
-    The primary response object. The application uses `decision` to decide
-    whether to serve the request (ALLOW), prompt re-authentication (CHALLENGE),
-    or terminate the session (BLOCK).
+    The primary response object. 
     """
     decision:     DecisionEnum  = Field(..., description="Enforcement decision: ALLOW, CHALLENGE, or BLOCK.")
     trust_score:  float         = Field(..., ge=0.0, le=100.0, description="Current session trust score (0-100).")
@@ -206,7 +153,6 @@ class SessionSummaryMetrics(BaseModel):
 
 
 class SessionSummaryResponse(BaseModel):
-    """Response from GET /session/{session_id}/summary."""
     user_id:          str                    = Field(..., description="User who owns this session.")
     session_id:       str                    = Field(..., description="Session identifier.")
     final_trust:      float                  = Field(..., description="Trust score at session end.")
@@ -221,7 +167,6 @@ class SessionSummaryResponse(BaseModel):
 
 
 class SessionDeleteResponse(BaseModel):
-    """Response from DELETE /session/{session_id}."""
     session_id:    str   = Field(..., description="Deleted session ID.")
     archived:      bool  = Field(..., description="True if session was archived before deletion.")
     final_trust:   float = Field(..., description="Trust score at time of deletion.")
@@ -242,12 +187,7 @@ class RestoreTrustRequest(BaseModel):
     )
 
 
-# ─────────────────────────────────────────────────────────────────────────────
-# PROFILE ENDPOINTS
-# ─────────────────────────────────────────────────────────────────────────────
-
 class ProfileResponse(BaseModel):
-    """Response from GET /profile/{user_id}."""
     user_id:             str         = Field(..., description="Profile owner.")
     vector_count:        int         = Field(..., description="Total verified human actions recorded.")
     adaptive_threshold:  float       = Field(..., description="Per-user cosine similarity anomaly threshold.")
@@ -261,7 +201,6 @@ class ProfileResponse(BaseModel):
 
 
 class ProfileDeleteResponse(BaseModel):
-    """Response from DELETE /profile/{user_id}."""
     user_id:          str   = Field(..., description="Deleted user ID.")
     deleted:          bool  = Field(..., description="True if the profile was found and deleted.")
     erasure_complete: bool  = Field(..., description="True if all associated data was erased.")
@@ -269,21 +208,14 @@ class ProfileDeleteResponse(BaseModel):
 
 
 class ProfileResetResponse(BaseModel):
-    """Response from POST /profile/{user_id}/reset."""
     user_id:          str   = Field(..., description="Reset user ID.")
     reset_to:         str   = Field(..., description="What the profile was reset to: 'population_prior' or 'empty'.")
     new_vector_count: int   = Field(..., description="Vector count after reset.")
     reset_at:         float = Field(..., description="Unix timestamp of reset.")
 
 
-# ─────────────────────────────────────────────────────────────────────────────
-# SHADOW MODE ENDPOINTS
-# ─────────────────────────────────────────────────────────────────────────────
-
 class ShadowIngestRequest(BaseModel):
     """
-    Request body for POST /shadow/ingest.
-
     Ingests a batch of historical action events through the shadow evaluation
     pipeline. All events are evaluated but no enforcement is applied.
     """
@@ -342,10 +274,6 @@ class ShadowExportResponse(BaseModel):
     format:        str   = Field(..., description="Export format used.")
 
 
-# ─────────────────────────────────────────────────────────────────────────────
-# HEALTH ENDPOINTS
-# ─────────────────────────────────────────────────────────────────────────────
-
 class ComponentStatus(BaseModel):
     """Health status for a single system component."""
     status:        str            = Field(..., description="'healthy', 'degraded', or 'down'.")
@@ -376,10 +304,6 @@ class ModelHealthResponse(BaseModel):
     versions_by_state:      Dict[str, List[str]] = Field(default_factory=dict)
 
 
-# ─────────────────────────────────────────────────────────────────────────────
-# ERROR RESPONSES
-# ─────────────────────────────────────────────────────────────────────────────
-
 class ErrorResponse(BaseModel):
     """Standard error response body for all 4xx and 5xx responses."""
     error:      str            = Field(..., description="Error type identifier.")
@@ -390,7 +314,7 @@ class ErrorResponse(BaseModel):
 
 
 class ValidationErrorResponse(BaseModel):
-    """Response body for 422 Unprocessable Entity (request validation failures)."""
+    """Response body for 422 Unprocessable Entity."""
     error:   str        = "validation_error"
     message: str        = "Request validation failed."
     errors:  List[Dict] = Field(default_factory=list, description="List of field-level validation errors.")
