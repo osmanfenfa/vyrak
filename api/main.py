@@ -15,7 +15,7 @@ from core.constants import SHADOW_MODE_ENABLED, LOG_LEVEL
 logger = logging.getLogger(__name__)
 
 origins = [
-    "https://your-dashboard.netlify.app",
+    "https://zelvryn.netlify.app",
     "http://localhost:5173", 
 ]
 
