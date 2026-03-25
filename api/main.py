@@ -14,19 +14,6 @@ from api.schemas import ErrorResponse, ValidationErrorResponse
 from core.constants import SHADOW_MODE_ENABLED, LOG_LEVEL
 logger = logging.getLogger(__name__)
 
-origins = [
-    "https://zelvryn.netlify.app",
-    "http://localhost:5173", 
-]
-
-app.add_middleware(
-    CORSMiddleware,
-    allow_origins=origins,
-    allow_credentials=True,
-    allow_methods=["*"],
-    allow_headers=["*"],
-)
-
 def _load_local_env_file(path: str = ".env") -> None:
     """
     Lightweight .env loader for local development.
@@ -271,21 +258,20 @@ def create_app() -> FastAPI:
         },
     )
 
-    cors_origins_raw = os.environ.get(
-        "CORS_ORIGINS",
-        "http://localhost:3000,http://localhost:5173"
-    )
-    cors_origins = [o.strip() for o in cors_origins_raw.split(",") if o.strip()]
+    origins = [
+        "https://zelvryn.netlify.app",
+        "http://localhost:5173",
+    ]
+    cors_origins_raw = os.environ.get("CORS_ORIGINS", "")
+    extra_origins = [o.strip() for o in cors_origins_raw.split(",") if o.strip()]
+    allow_origins = list(dict.fromkeys(origins + extra_origins))
 
     app.add_middleware(
         CORSMiddleware,
-        allow_origins     = cors_origins,
+        allow_origins     = allow_origins,
         allow_credentials = True,
-        allow_methods     = ["GET", "POST", "DELETE", "OPTIONS"],
-        allow_headers     = [
-            "Authorization", "Content-Type",
-            "X-Request-ID", "X-Forwarded-For",
-        ],
+        allow_methods     = ["*"],
+        allow_headers     = ["*"],
         expose_headers    = [
             "X-Request-ID", "X-Process-Time-Ms", "X-Zelvryn-Version"
         ],
