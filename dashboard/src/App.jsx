@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useCallback, useState } from "react";
 
 import { useSessionLifecycle, useSession } from "./hooks/useSession.js";
 import { useProfile } from "./hooks/useProfile.js";
@@ -113,6 +113,10 @@ export default function App() {
     start,
     end,
   } = useSessionLifecycle();
+  const handleSessionMissing = useCallback(async () => {
+    await end();
+    setSessionMetadata(null);
+  }, [end]);
   const {
     summary,
     feed,
@@ -120,7 +124,7 @@ export default function App() {
     error: actionError,
     submitAction,
     restoreTrust,
-  } = useSession(sessionId);
+  } = useSession(sessionId, { onSessionMissing: handleSessionMissing });
   const { profile } = useProfile(userId);
 
   const latestFeed = feed[0];

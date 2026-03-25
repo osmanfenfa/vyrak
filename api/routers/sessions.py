@@ -44,6 +44,17 @@ router = APIRouter(
 )
 
 
+def _runtime_ramp_actions(request: Request) -> int:
+    cfg = getattr(request.app.state, "runtime_config", {}) or {}
+    return max(1, int(cfg.get("cold_start_ramp_actions", 50)))
+
+
+def _runtime_trust_initial(request: Request) -> float:
+    cfg = getattr(request.app.state, "runtime_config", {}) or {}
+    val = float(cfg.get("trust_initial", TRUST_INITIAL))
+    return min(100.0, max(0.0, val))
+
+
 @router.post(
     "/start",
     response_model=SessionStartResponse,
@@ -83,7 +94,10 @@ async def start_session(
     request.state.user_id    = user_id
     request.state.session_id = session_id
     shadow_mode  = getattr(request.app.state, "shadow_mode", False)
-    ramp_active  = not engine.profile.is_mature()
+    ramp_active  = not engine.profile.is_mature(
+        min_actions=_runtime_ramp_actions(request)
+    )
+    trust_initial = _runtime_trust_initial(request)
 
     logger.info(
         "Session started: session=%s user=%s ramp=%s shadow=%s",
@@ -93,7 +107,7 @@ async def start_session(
     return SessionStartResponse(
         session_id  = session_id,
         user_id     = user_id,
-        trust_score = TRUST_INITIAL,
+        trust_score = trust_initial,
         ramp_active = ramp_active,
         shadow_mode = shadow_mode,
         started_at  = time.time(),
@@ -236,7 +250,9 @@ async def restore_trust(
         entropy     = 0.0,
         temporal_z  = 0.0,
         anomalies   = [f"TRUST_RESTORED:{body.reason}"],
-        ramp_active = not engine.profile.is_mature(),
+        ramp_active = not engine.profile.is_mature(
+            min_actions=_runtime_ramp_actions(request)
+        ),
         session_id  = session_id,
         action_type = "login",
         timestamp   = time.time(),
@@ -276,7 +292,7 @@ async def get_session_summary(
     results = engine.result_history
     avg_trust = (
         sum(r.trust_score for r in results) / len(results)
-        if results else TRUST_INITIAL
+        if results else _runtime_trust_initial(request)
     )
     avg_bot_p = (
         sum(r.bot_prob for r in results) / len(results)

@@ -1,12 +1,6 @@
-# config/logging.yaml
-# Zelvryn structured logging configuration.
-# Loaded by api/main.py at startup via logging.config.dictConfig().
-# Override LOG_LEVEL env var to change root verbosity.
 
 version: 1
 disable_existing_loggers: false
-
-# ── Formatters ────────────────────────────────────────────────────────────────
 
 formatters:
   console:
@@ -25,7 +19,6 @@ formatters:
     # Audit log entries are already JSON strings — pass through as-is.
     format: "%(message)s"
 
-# ── Handlers ──────────────────────────────────────────────────────────────────
 
 handlers:
   console:

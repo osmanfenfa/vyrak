@@ -249,6 +249,24 @@ def get_or_create_engine(
     )
     _session_cache[session_id] = (engine, now)
 
+    # Apply live runtime controls to newly created engines.
+    runtime_cfg = getattr(request.app.state, "runtime_config", {}) or {}
+    try:
+        if hasattr(engine, "_ramp"):
+            ramp_actions = max(
+                1,
+                int(runtime_cfg.get("cold_start_ramp_actions", engine._ramp.ramp_actions)),
+            )
+            engine._ramp.ramp_actions = ramp_actions
+            engine._ramp._interp_start = int(
+                ramp_actions * (1 - engine._ramp.interpolation_fraction)
+            )
+
+        trust_initial = float(runtime_cfg.get("trust_initial", engine.trust_score))
+        engine.trust_score = min(100.0, max(0.0, trust_initial))
+    except Exception as e:
+        logger.warning("Failed to apply runtime settings to new engine: %s", e)
+
     logger.debug(
         "Session engine created: session=%s user=%s shadow=%s",
         session_id, user_id, shadow_mode

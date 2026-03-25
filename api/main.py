@@ -11,6 +11,7 @@ from fastapi.responses import JSONResponse
 from api.middleware import register_middleware
 from api.routers import include_routers
 from api.schemas import ErrorResponse, ValidationErrorResponse
+from api.admin_runtime import apply_runtime_patch, get_runtime_config
 from core.constants import SHADOW_MODE_ENABLED, LOG_LEVEL
 logger = logging.getLogger(__name__)
 
@@ -111,6 +112,11 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
             "SHADOW MODE ENABLED — evaluations are logged but NOT enforced."
         )
 
+    # Runtime-adjustable controls (no restart required for admin updates)
+    runtime_cfg = get_runtime_config(app)
+    runtime_cfg["shadow_mode"] = bool(app.state.shadow_mode)
+    apply_runtime_patch(app, runtime_cfg)
+
     # Redis / Profile Store
     try:
         from profiles.redis_store import RedisProfileStore
@@ -151,6 +157,12 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
             model_dir = os.path.dirname(model_dir) or "models"
 
         registry = ModelRegistry(registry_dir=model_dir)
+        registry.canary_traffic_percent = int(
+            get_runtime_config(app).get(
+                "canary_traffic_percent",
+                registry.canary_traffic_percent,
+            )
+        )
         app.state.model_registry = registry
 
         active = registry.active_version()

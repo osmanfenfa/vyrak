@@ -4,12 +4,30 @@ import { sessions } from "../api/client.js";
 const POLL_INTERVAL_MS = 3000;
 const MAX_FEED_ITEMS = 100;
 
-export function useSession(sessionId) {
+export function useSession(sessionId, options = {}) {
+  const { onSessionMissing } = options;
   const [summary, setSummary] = useState(null);
   const [feed, setFeed] = useState([]);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState(null);
   const timerRef = useRef(null);
+  const missingHandledRef = useRef(false);
+
+  const handleMissingSession = useCallback(() => {
+    if (missingHandledRef.current) return;
+    missingHandledRef.current = true;
+
+    if (timerRef.current) {
+      clearInterval(timerRef.current);
+      timerRef.current = null;
+    }
+
+    setSummary(null);
+    setFeed([]);
+    setLoading(false);
+    setError("Session expired or missing. Please start a new session.");
+    onSessionMissing?.();
+  }, [onSessionMissing]);
 
   const fetchSummary = useCallback(async () => {
     if (!sessionId) return;
@@ -19,20 +37,35 @@ export function useSession(sessionId) {
       setSummary(data);
       setError(null);
     } catch (e) {
-      if (e.status !== 404) setError(e.message);
+      if (e.status === 404) {
+        handleMissingSession();
+        return;
+      }
+      setError(e.message);
     }
-  }, [sessionId]);
+  }, [sessionId, handleMissingSession]);
 
   useEffect(() => {
     if (!sessionId) {
+      if (timerRef.current) {
+        clearInterval(timerRef.current);
+        timerRef.current = null;
+      }
+      missingHandledRef.current = false;
       setSummary(null);
       setFeed([]);
       return;
     }
 
+    missingHandledRef.current = false;
     fetchSummary();
     timerRef.current = setInterval(fetchSummary, POLL_INTERVAL_MS);
-    return () => clearInterval(timerRef.current);
+    return () => {
+      if (timerRef.current) {
+        clearInterval(timerRef.current);
+        timerRef.current = null;
+      }
+    };
   }, [sessionId, fetchSummary]);
 
   const submitAction = useCallback(
@@ -46,13 +79,17 @@ export function useSession(sessionId) {
         setError(null);
         return result;
       } catch (e) {
+        if (e.status === 404) {
+          handleMissingSession();
+          return null;
+        }
         setError(e.message);
         return null;
       } finally {
         setLoading(false);
       }
     },
-    [sessionId],
+    [sessionId, handleMissingSession],
   );
 
   const restoreTrust = useCallback(
@@ -64,10 +101,14 @@ export function useSession(sessionId) {
         setFeed((prev) => [result, ...prev].slice(0, MAX_FEED_ITEMS));
         await fetchSummary();
       } catch (e) {
+        if (e.status === 404) {
+          handleMissingSession();
+          return;
+        }
         setError(e.message);
       }
     },
-    [sessionId, fetchSummary],
+    [sessionId, fetchSummary, handleMissingSession],
   );
 
   return {

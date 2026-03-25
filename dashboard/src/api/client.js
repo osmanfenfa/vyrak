@@ -36,6 +36,26 @@ function buildHeaders({ authToken, extraHeaders } = {}) {
   return headers;
 }
 
+function buildQueryString(params = {}) {
+  const query = new URLSearchParams();
+  Object.entries(params).forEach(([key, value]) => {
+    if (value === null || value === undefined || value === "") return;
+    query.set(key, String(value));
+  });
+  const text = query.toString();
+  return text ? `?${text}` : "";
+}
+
+async function parsePayload(response) {
+  const text = await response.text();
+  if (!text) return null;
+  try {
+    return JSON.parse(text);
+  } catch {
+    return text;
+  }
+}
+
 async function request(path, options = {}) {
   const {
     method = "GET",
@@ -50,16 +70,7 @@ async function request(path, options = {}) {
     body: body ? JSON.stringify(body) : undefined,
   });
 
-  const text = await response.text();
-  let payload = null;
-
-  if (text) {
-    try {
-      payload = JSON.parse(text);
-    } catch {
-      payload = text;
-    }
-  }
+  const payload = await parsePayload(response);
 
   if (!response.ok) {
     const message =
@@ -74,6 +85,42 @@ async function request(path, options = {}) {
   }
 
   return payload;
+}
+
+async function requestBlob(path, options = {}) {
+  const {
+    method = "GET",
+    body,
+    authToken,
+    extraHeaders,
+  } = options;
+
+  const response = await fetch(`${API_BASE}${path}`, {
+    method,
+    headers: buildHeaders({ authToken, extraHeaders }),
+    body: body ? JSON.stringify(body) : undefined,
+  });
+
+  if (!response.ok) {
+    const payload = await parsePayload(response);
+    const message =
+      payload?.detail ||
+      payload?.message ||
+      `Request failed with status ${response.status}`;
+    const error = new Error(message);
+    error.status = response.status;
+    error.payload = payload;
+    throw error;
+  }
+
+  const blob = await response.blob();
+  const disposition = response.headers.get("Content-Disposition") || "";
+  const filenameMatch = disposition.match(/filename="?([^"]+)"?/i);
+  return {
+    blob,
+    filename: filenameMatch?.[1] || null,
+    contentType: response.headers.get("Content-Type") || "application/octet-stream",
+  };
 }
 
 function authForUser(userId) {
@@ -183,6 +230,86 @@ export const profiles = {
     return request(`/profile/${encodeURIComponent(userId)}`, {
       method: "DELETE",
       authToken: requireAuthUser(userId, "profile delete"),
+    });
+  },
+};
+
+export const adminGate = {
+  overview(userId) {
+    return request("/admin-gate", {
+      authToken: requireAuthUser(userId, "admin overview"),
+    });
+  },
+
+  getConfig(userId) {
+    return request("/admin-gate/config", {
+      authToken: requireAuthUser(userId, "admin config read"),
+    });
+  },
+
+  patchConfig(userId, patch) {
+    return request("/admin-gate/config", {
+      method: "PATCH",
+      authToken: requireAuthUser(userId, "admin config patch"),
+      body: patch,
+    });
+  },
+
+  setShadowMode(userId, enabled) {
+    return request("/admin-gate/shadow-mode", {
+      method: "PATCH",
+      authToken: requireAuthUser(userId, "admin shadow mode patch"),
+      body: { enabled: Boolean(enabled) },
+    });
+  },
+
+  listModels(userId) {
+    return request("/admin-gate/models", {
+      authToken: requireAuthUser(userId, "admin model list"),
+    });
+  },
+
+  setCanary(userId, version, trafficPercent = null) {
+    return request("/admin-gate/models/canary", {
+      method: "POST",
+      authToken: requireAuthUser(userId, "admin canary promote"),
+      body: {
+        version,
+        traffic_percent: trafficPercent,
+      },
+    });
+  },
+
+  promoteModel(userId, version, notes = "") {
+    return request("/admin-gate/models/promote", {
+      method: "POST",
+      authToken: requireAuthUser(userId, "admin model promote"),
+      body: { version, notes },
+    });
+  },
+
+  rollbackModel(userId, targetVersion = null, notes = "") {
+    return request("/admin-gate/models/rollback", {
+      method: "POST",
+      authToken: requireAuthUser(userId, "admin model rollback"),
+      body: {
+        target_version: targetVersion,
+        notes,
+      },
+    });
+  },
+
+  listAudit(userId, params = {}) {
+    const qs = buildQueryString(params);
+    return request(`/admin-gate/audit${qs}`, {
+      authToken: requireAuthUser(userId, "admin audit query"),
+    });
+  },
+
+  exportAudit(userId, params = {}) {
+    const qs = buildQueryString(params);
+    return requestBlob(`/admin-gate/audit/export${qs}`, {
+      authToken: requireAuthUser(userId, "admin audit export"),
     });
   },
 };
