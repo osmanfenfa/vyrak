@@ -14,6 +14,18 @@ from api.schemas import ErrorResponse, ValidationErrorResponse
 from core.constants import SHADOW_MODE_ENABLED, LOG_LEVEL
 logger = logging.getLogger(__name__)
 
+origins = [
+    "https://your-dashboard.netlify.app",
+    "http://localhost:5173", 
+]
+
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=origins,
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
 
 def _load_local_env_file(path: str = ".env") -> None:
     """

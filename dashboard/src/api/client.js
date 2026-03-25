@@ -19,6 +19,10 @@ function setStoredUserId(userId) {
   }
 }
 
+function normalizeUserId(userId) {
+  return typeof userId === "string" ? userId.trim() : "";
+}
+
 function buildHeaders({ authToken, extraHeaders } = {}) {
   const headers = {
     "Content-Type": "application/json",
@@ -73,7 +77,24 @@ async function request(path, options = {}) {
 }
 
 function authForUser(userId) {
-  return userId || getStoredUserId() || "alice@example.com";
+  const explicitUser = normalizeUserId(userId);
+  if (explicitUser) return explicitUser;
+
+  const storedUser = normalizeUserId(getStoredUserId());
+  if (storedUser) return storedUser;
+
+  return null;
+}
+
+function requireAuthUser(userId, contextLabel) {
+  const resolved = authForUser(userId);
+  if (resolved) return resolved;
+
+  const error = new Error(
+    `No user available for ${contextLabel}. Start a session with a valid user ID first.`,
+  );
+  error.status = 400;
+  throw error;
 }
 
 export const health = {
@@ -87,29 +108,36 @@ export const health = {
 
 export const sessions = {
   async start(userId, metadata = null) {
-    const token = authForUser(userId);
+    const cleanUserId = normalizeUserId(userId);
+    if (!cleanUserId) {
+      const error = new Error("User ID is required to start a session.");
+      error.status = 400;
+      throw error;
+    }
+
+    const token = requireAuthUser(cleanUserId, "session start");
     const data = await request("/session/start", {
       method: "POST",
       authToken: token,
       body: {
-        user_id: userId,
+        user_id: cleanUserId,
         metadata,
       },
     });
-    setStoredUserId(userId);
+    setStoredUserId(cleanUserId);
     return data;
   },
 
   summary(sessionId) {
     return request(`/session/${sessionId}/summary`, {
-      authToken: authForUser(),
+      authToken: requireAuthUser(null, "session summary"),
     });
   },
 
   action(sessionId, actionType, resourceId = "resource", metadata = null) {
     return request(`/session/${sessionId}/action`, {
       method: "POST",
-      authToken: authForUser(),
+      authToken: requireAuthUser(null, "session action"),
       body: {
         action_type: actionType,
         resource_id: resourceId,
@@ -121,7 +149,7 @@ export const sessions = {
   restoreTrust(sessionId, increment = 20, reason = "re_authentication") {
     return request(`/session/${sessionId}/restore-trust`, {
       method: "POST",
-      authToken: authForUser(),
+      authToken: requireAuthUser(null, "restore trust"),
       body: {
         increment,
         reason,
@@ -132,7 +160,7 @@ export const sessions = {
   end(sessionId) {
     return request(`/session/${sessionId}`, {
       method: "DELETE",
-      authToken: authForUser(),
+      authToken: requireAuthUser(null, "session end"),
     });
   },
 };
@@ -140,21 +168,21 @@ export const sessions = {
 export const profiles = {
   get(userId) {
     return request(`/profile/${encodeURIComponent(userId)}`, {
-      authToken: authForUser(userId),
+      authToken: requireAuthUser(userId, "profile read"),
     });
   },
 
   reset(userId) {
     return request(`/profile/${encodeURIComponent(userId)}/reset`, {
       method: "POST",
-      authToken: authForUser(userId),
+      authToken: requireAuthUser(userId, "profile reset"),
     });
   },
 
   delete(userId) {
     return request(`/profile/${encodeURIComponent(userId)}`, {
       method: "DELETE",
-      authToken: authForUser(userId),
+      authToken: requireAuthUser(userId, "profile delete"),
     });
   },
 };

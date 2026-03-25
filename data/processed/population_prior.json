@@ -1,62 +1,30 @@
 {
-  "_comment": "Zelvryn population prior — default baseline for cold start user initialisation.",
-  "_description": "Represents the statistical behaviour of a typical legitimate enterprise user. Built from anonymised aggregate statistics across a simulated population. Replace with a deployment-specific prior by running: python scripts/build_population_prior.py",
-  "_schema_version": "2.0",
-  "_system": "Zelvryn — Adaptive Behavioral Signature Authentication",
-  "_author": "Vyrak",
-
   "mean_action_vector": [
-    0.052,
-    0.481,
-    0.197,
-    0.021,
-    0.168,
-    0.028,
-    0.033,
-    0.020
+    0.056424,
+    0.476223,
+    0.190465,
+    0.021546,
+    0.16969,
+    0.027479,
+    0.033225,
+    0.024948
   ],
-  "_mean_action_vector_labels": [
-    "login (index 0)",
-    "read   (index 1)",
-    "write  (index 2)",
-    "delete (index 3)",
-    "search (index 4)",
-    "export (index 5)",
-    "config (index 6)",
-    "admin  (index 7)"
-  ],
-  "_mean_action_vector_notes": "Sums to 1.0. Typical enterprise user spends ~48% of actions reading, ~20% writing, ~17% searching. High-risk actions (export, config, admin) each below 4%.",
-
   "std_action_vector": [
-    0.031,
-    0.092,
-    0.058,
-    0.018,
-    0.061,
-    0.024,
-    0.028,
-    0.017
+    0.013483,
+    0.018206,
+    0.011287,
+    0.015279,
+    0.016199,
+    0.013575,
+    0.013749,
+    0.012834
   ],
-  "_std_action_vector_notes": "Standard deviation of each frequency component across the source user population. Higher std on read/write reflects natural variation in user roles.",
-
-  "mean_interval_s": 4.8,
-  "_mean_interval_s_notes": "Population-average inter-action interval in seconds. Reflects typical desktop navigation pace. Faster users (developers) average ~2s; slower users (executives reviewing docs) average ~10s.",
-
-  "std_interval_s": 3.2,
-  "_std_interval_s_notes": "Population-average standard deviation of inter-action intervals. Humans naturally vary their pace; std ~3s is typical.",
-
-  "median_adaptive_threshold": 0.74,
-  "_median_adaptive_threshold_notes": "Median cosine similarity anomaly threshold across source profiles. New users are initialised with this threshold. Their personal threshold is recalculated after 50 actions.",
-
+  "mean_interval_s": 4.8878,
+  "std_interval_s": 1.2115,
+  "median_adaptive_threshold": 0.6748,
   "n_profiles": 0,
-  "_n_profiles_notes": "Number of real user profiles this prior was computed from. 0 = this is the system default prior. Run scripts/build_population_prior.py to build a deployment-specific prior.",
-
-  "built_at": 0.0,
-  "_built_at_notes": "Unix timestamp of last rebuild. 0.0 = never rebuilt (using defaults). A prior is considered stale after 7 days.",
-
+  "built_at": 1774379885.0892305,
   "deployment_context": "default",
-  "_deployment_context_notes": "Descriptive label for the application context this prior was built for. Set to 'enterprise_saas', 'fintech', 'healthcare', etc. when building deployment-specific priors.",
-
   "action_types": [
     "login",
     "read",
@@ -67,38 +35,5 @@
     "config",
     "admin"
   ],
-  "_action_types_notes": "The 8 action types in their canonical index order. Must match UserAction.ACTION_TYPES in core/action.py.",
-
-  "feature_reference": {
-    "index_0_freq_login":      "Proportion of login actions. Typical: 0.03–0.08",
-    "index_1_freq_read":       "Proportion of read actions. Typical: 0.35–0.60",
-    "index_2_freq_write":      "Proportion of write actions. Typical: 0.10–0.30",
-    "index_3_freq_delete":     "Proportion of delete actions. Typical: 0.01–0.04",
-    "index_4_freq_search":     "Proportion of search actions. Typical: 0.10–0.25",
-    "index_5_freq_export":     "Proportion of export actions. Typical: 0.01–0.05",
-    "index_6_freq_config":     "Proportion of config actions. Typical: 0.01–0.05",
-    "index_7_freq_admin":      "Proportion of admin actions. Typical: 0.01–0.04"
-  },
-
-  "cold_start_parameters": {
-    "virtual_actions_at_init": 30,
-    "_notes": "New user profiles are seeded as if they had already performed this many actions matching the population average. Must be less than COLD_START_RAMP_ACTIONS (50).",
-
-    "ramp_up_actions":         50,
-    "_ramp_notes": "Number of verified real actions before full enforcement begins. During ramp-up, cosine similarity check is disabled and ML threshold is raised.",
-
-    "ramp_ml_threshold":       0.92,
-    "_ramp_ml_notes": "P(bot) threshold during ramp-up (more strict = fewer false positives on new users).",
-
-    "ramp_temporal_limit":     4.5,
-    "_ramp_temporal_notes": "Temporal Z-score limit during ramp-up (looser = tolerates new user exploration timing)."
-  },
-
-  "rebuild_instructions": {
-    "step_1": "Ensure at least 10 mature user profiles exist in Redis (vector_count >= 20 each).",
-    "step_2": "Run: python scripts/build_population_prior.py",
-    "step_3": "The script reads all profiles from Redis via RedisProfileStore, computes aggregate statistics, and overwrites this file.",
-    "step_4": "Restart the API or call: GET /health — the new prior is loaded at next startup.",
-    "frequency": "Recommended: weekly cron job via Makefile target 'make rebuild-prior'."
-  }
+  "_note": "Built from synthetic bootstrap (no real profiles available)."
 }
