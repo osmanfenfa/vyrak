@@ -148,6 +148,21 @@ async def shadow_ingest(
         processed, errors, blocks, challenges, duration_ms
     )
 
+    request.state.audit_event = {
+        "event_type": "shadow_ingest",
+        "actor_id": admin_user,
+        "before_state": None,
+        "after_state": {
+            "processed": processed,
+            "errors": errors,
+            "blocks": blocks,
+            "challenges": challenges,
+            "export_path": export_path,
+            "duration_ms": round(duration_ms, 2),
+        },
+        "at": time.time(),
+    }
+
     return ShadowIngestResponse(
         processed   = processed,
         errors      = errors,
@@ -230,6 +245,24 @@ async def export_shadow_data(
         "Shadow export: %d entries (%d human, %d bot) → %s",
         len(all_entries), n_human, n_bot, export_path
     )
+
+    request.state.audit_event = {
+        "event_type": "shadow_export",
+        "actor_id": admin_user,
+        "before_state": {
+            "session_id": session_id,
+            "format": format,
+            "verified_only": verified_only,
+            "pseudonymise": pseudonymise,
+        },
+        "after_state": {
+            "export_path": export_path,
+            "n_entries": len(all_entries),
+            "n_human": n_human,
+            "n_bot": n_bot,
+        },
+        "at": time.time(),
+    }
 
     return ShadowExportResponse(
         export_path    = export_path,
@@ -316,6 +349,12 @@ async def verify_shadow_entry(
         )
 
     shadow_logger = _shadow_loggers[session_id]
+    before_entry = _find_shadow_entry(shadow_logger, timestamp=timestamp)
+    before_verified = before_entry.verified_label if before_entry else None
+    before_effective = (
+        before_entry.effective_label() if before_entry is not None else None
+    )
+
     success = shadow_logger.set_verified_label(timestamp=timestamp, label=label)
 
     if not success:
@@ -328,6 +367,30 @@ async def verify_shadow_entry(
         "Shadow label verified: session=%s timestamp=%.3f label=%d by=%s",
         session_id, timestamp, label, admin_user
     )
+
+    after_entry = _find_shadow_entry(shadow_logger, timestamp=timestamp)
+    after_verified = after_entry.verified_label if after_entry else None
+    after_effective = (
+        after_entry.effective_label() if after_entry is not None else label
+    )
+
+    request.state.audit_event = {
+        "event_type": "shadow_label_verified",
+        "actor_id": admin_user,
+        "before_state": {
+            "session_id": session_id,
+            "timestamp": timestamp,
+            "verified_label": before_verified,
+            "effective_label": before_effective,
+        },
+        "after_state": {
+            "session_id": session_id,
+            "timestamp": timestamp,
+            "verified_label": after_verified,
+            "effective_label": after_effective,
+        },
+        "at": time.time(),
+    }
 
     # Also save to feature store if available
     feature_store = get_feature_store(request)
@@ -351,3 +414,22 @@ async def verify_shadow_entry(
         "label":       label,
         "verified_by": admin_user,
     }
+
+
+def _find_shadow_entry(
+    shadow_logger: ShadowModeLogger,
+    timestamp: float,
+    tolerance_seconds: float = 1.0,
+) -> Optional[ShadowLogEntry]:
+    best_entry = None
+    best_diff = float("inf")
+
+    for entry in shadow_logger.log_entries:
+        diff = abs(float(entry.timestamp) - float(timestamp))
+        if diff < best_diff:
+            best_diff = diff
+            best_entry = entry
+
+    if best_entry and best_diff <= tolerance_seconds:
+        return best_entry
+    return None

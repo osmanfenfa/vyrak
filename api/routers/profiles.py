@@ -133,6 +133,11 @@ async def delete_profile(
 
     profile_store = get_profile_store(request)
     deleted_at    = time.time()
+    before_profile = None
+    try:
+        before_profile = profile_store.get(user_id)
+    except Exception:
+        before_profile = None
 
     # Delete from Redis
     deleted = False
@@ -168,9 +173,27 @@ async def delete_profile(
     # Audit trail
     request.state.audit_event = {
         "event_type":  "gdpr_erasure",
+        "actor_id":    current_user_id,
         "user_id":     user_id,
         "deleted_by":  current_user_id,
         "deleted_at":  deleted_at,
+        "before_state": {
+            "profile_exists": bool(before_profile is not None),
+            "vector_count": (
+                int(before_profile.vector_count)
+                if before_profile is not None else 0
+            ),
+            "training_samples": (
+                len(getattr(before_profile, "ml_training_data", []))
+                if before_profile is not None else 0
+            ),
+        },
+        "after_state": {
+            "profile_exists": False,
+            "deleted": bool(deleted),
+            "erasure_complete": True,
+        },
+        "at": deleted_at,
     }
 
     logger.info(
@@ -207,8 +230,14 @@ async def reset_profile(
     """
     profile_store    = get_profile_store(request)
     population_prior = get_population_prior(request)
+    before_profile = None
 
     reset_at = time.time()
+
+    try:
+        before_profile = profile_store.get(user_id)
+    except Exception:
+        before_profile = None
 
     if population_prior is not None:
         new_profile = population_prior.create_new_user_profile(user_id)
@@ -229,10 +258,29 @@ async def reset_profile(
     # Audit
     request.state.audit_event = {
         "event_type":   "profile_reset",
+        "actor_id":     admin_user,
         "user_id":      user_id,
         "reset_to":     reset_to,
         "reset_by":     admin_user,
         "reset_at":     reset_at,
+        "before_state": {
+            "profile_exists": bool(before_profile is not None),
+            "vector_count": (
+                int(before_profile.vector_count)
+                if before_profile is not None else 0
+            ),
+            "is_mature": (
+                bool(before_profile.is_mature())
+                if before_profile is not None else False
+            ),
+        },
+        "after_state": {
+            "profile_exists": True,
+            "reset_to": reset_to,
+            "vector_count": int(new_profile.vector_count),
+            "is_mature": bool(new_profile.is_mature()),
+        },
+        "at": reset_at,
     }
 
     logger.info(

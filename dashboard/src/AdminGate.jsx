@@ -4,17 +4,41 @@ import { adminGate } from "./api/client.js";
 const DEFAULT_ADMIN_USER = "admin@zelvryn.local";
 
 const CONFIG_FIELDS = [
+  { key: "trust_initial", label: "Trust Initial", step: "0.1" },
   { key: "trust_decay_mild", label: "Trust Decay Mild", step: "0.1" },
   { key: "trust_decay_moderate", label: "Trust Decay Moderate", step: "0.1" },
   { key: "trust_decay_severe", label: "Trust Decay Severe", step: "0.1" },
   { key: "trust_decay_ai_bot", label: "Trust Decay AI Bot", step: "0.1" },
+  { key: "trust_recovery_rate", label: "Trust Recovery Rate", step: "0.1" },
   { key: "trust_challenge_threshold", label: "Challenge Threshold", step: "0.1" },
   { key: "trust_block_threshold", label: "Block Threshold", step: "0.1" },
   { key: "ml_bot_confidence_thresh", label: "ML Bot Threshold", step: "0.01" },
-  { key: "cold_start_ramp_actions", label: "Cold Start Ramp Actions", step: "1" },
-  { key: "ewma_decay_factor", label: "EWMA Decay Factor", step: "0.01" },
   { key: "ml_retrain_interval", label: "Retrain Interval", step: "1" },
+  { key: "cold_start_ramp_actions", label: "Cold Start Ramp Actions", step: "1" },
+  { key: "cold_start_ml_thresh", label: "Cold Start ML Threshold", step: "0.01" },
+  { key: "cold_start_temporal_limit", label: "Cold Start Temporal Limit", step: "0.1" },
+  { key: "cold_start_recovery_rate", label: "Cold Start Recovery Rate", step: "0.1" },
+  { key: "ewma_decay_factor", label: "EWMA Decay Factor", step: "0.01" },
   { key: "canary_traffic_percent", label: "Canary Traffic %", step: "1" },
+];
+
+const AUDIT_EVENT_OPTIONS = [
+  "",
+  "session_allow",
+  "session_challenge",
+  "session_block",
+  "session_closed",
+  "admin_config_changed",
+  "admin_shadow_mode_changed",
+  "admin_model_canary_promoted",
+  "admin_model_promoted",
+  "admin_model_rollback",
+  "admin_audit_export",
+  "shadow_ingest",
+  "shadow_export",
+  "shadow_label_verified",
+  "profile_reset",
+  "gdpr_erasure",
 ];
 
 function toDraft(config = {}) {
@@ -29,6 +53,26 @@ function parseMaybeNumber(value) {
   if (value === "" || value === null || value === undefined) return null;
   const parsed = Number(value);
   return Number.isFinite(parsed) ? parsed : NaN;
+}
+
+function toUnixSeconds(value) {
+  if (!value) return null;
+  const ms = Date.parse(value);
+  if (Number.isNaN(ms)) return null;
+  return Math.floor(ms / 1000);
+}
+
+function buildAuditParams(filters = {}) {
+  const rawLimit = Number(filters.limit);
+  const limit = Number.isFinite(rawLimit) ? Math.max(1, Math.min(5000, Math.floor(rawLimit))) : 25;
+
+  return {
+    limit,
+    event_type: filters.event_type || undefined,
+    actor_id: filters.actor_id || undefined,
+    since_ts: toUnixSeconds(filters.since_local),
+    until_ts: toUnixSeconds(filters.until_local),
+  };
 }
 
 function triggerDownload(blob, filename) {
@@ -51,9 +95,18 @@ export default function AdminGate() {
 
   const [overview, setOverview] = useState(null);
   const [config, setConfig] = useState(null);
+  const [configEffects, setConfigEffects] = useState(null);
   const [models, setModels] = useState(null);
   const [audit, setAudit] = useState([]);
   const [draft, setDraft] = useState({});
+  const [auditFilters, setAuditFilters] = useState({
+    event_type: "",
+    actor_id: "",
+    since_local: "",
+    until_local: "",
+    limit: "25",
+  });
+  const [auditQuery, setAuditQuery] = useState({ limit: 25 });
 
   const [canaryVersion, setCanaryVersion] = useState("");
   const [promoteVersion, setPromoteVersion] = useState("");
@@ -68,10 +121,11 @@ export default function AdminGate() {
         adminGate.overview(adminUser),
         adminGate.getConfig(adminUser),
         adminGate.listModels(adminUser),
-        adminGate.listAudit(adminUser, { limit: 25 }),
+        adminGate.listAudit(adminUser, auditQuery),
       ]);
       setOverview(ov);
       setConfig(cfg.config);
+      setConfigEffects(cfg.config_effects || ov.config_effects || null);
       setDraft(toDraft(cfg.config));
       setModels(mdl);
       setAudit(aud.items || []);
@@ -80,7 +134,7 @@ export default function AdminGate() {
     } finally {
       setLoading(false);
     }
-  }, [adminUser]);
+  }, [adminUser, auditQuery]);
 
   useEffect(() => {
     refresh();
@@ -114,8 +168,14 @@ export default function AdminGate() {
     try {
       const result = await adminGate.patchConfig(adminUser, patch);
       setConfig(result.config);
+      setConfigEffects(result.config_effects || null);
       setDraft(toDraft(result.config));
-      setNotice(`Updated: ${result.changed_keys.join(", ")}`);
+      const immediate = result.effective_immediately || [];
+      const nextCycle = result.effective_next_retrain_cycle || [];
+      const parts = [];
+      if (immediate.length) parts.push(`Immediate: ${immediate.join(", ")}`);
+      if (nextCycle.length) parts.push(`Next retrain cycle: ${nextCycle.join(", ")}`);
+      setNotice(parts.join(" | ") || `Updated: ${result.changed_keys.join(", ")}`);
       await refresh();
     } catch (e) {
       setError(e.message);
@@ -189,11 +249,32 @@ export default function AdminGate() {
     }
   };
 
+  const handleApplyAuditFilters = () => {
+    setAuditQuery(buildAuditParams(auditFilters));
+  };
+
+  const handleClearAuditFilters = () => {
+    const cleared = {
+      event_type: "",
+      actor_id: "",
+      since_local: "",
+      until_local: "",
+      limit: "25",
+    };
+    setAuditFilters(cleared);
+    setAuditQuery(buildAuditParams(cleared));
+  };
+
   const handleExportAudit = async (format) => {
     setBusy(true);
     setError(null);
     try {
-      const result = await adminGate.exportAudit(adminUser, { format, limit: 2000 });
+      const exportParams = {
+        ...auditQuery,
+        format,
+        limit: 2000,
+      };
+      const result = await adminGate.exportAudit(adminUser, exportParams);
       triggerDownload(result.blob, result.filename || `audit_export.${format}`);
       setNotice(`Audit exported (${format}).`);
     } catch (e) {
@@ -245,6 +326,11 @@ export default function AdminGate() {
           <section className="left-stack">
             <div className="card">
               <div className="card-title">System Controls</div>
+              {configEffects && (
+                <div className="muted mono" style={{ marginBottom: 8, fontSize: 11 }}>
+                  Immediate keys: {(configEffects.effective_immediately || []).join(", ")} | Next retrain cycle: {(configEffects.effective_next_retrain_cycle || []).join(", ")}
+                </div>
+              )}
               <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 8 }}>
                 {CONFIG_FIELDS.map((field) => (
                   <label key={field.key} style={{ display: "flex", flexDirection: "column", gap: 4 }}>
@@ -338,6 +424,66 @@ export default function AdminGate() {
 
             <div className="card">
               <div className="card-title">Audit Log</div>
+              <div
+                style={{
+                  display: "grid",
+                  gridTemplateColumns: "1fr 1fr",
+                  gap: 8,
+                  marginBottom: 8,
+                }}
+              >
+                <select
+                  value={auditFilters.event_type}
+                  onChange={(e) =>
+                    setAuditFilters((prev) => ({ ...prev, event_type: e.target.value }))
+                  }
+                >
+                  {AUDIT_EVENT_OPTIONS.map((eventType) => (
+                    <option key={eventType || "all"} value={eventType}>
+                      {eventType || "All event types"}
+                    </option>
+                  ))}
+                </select>
+                <input
+                  value={auditFilters.actor_id}
+                  onChange={(e) =>
+                    setAuditFilters((prev) => ({ ...prev, actor_id: e.target.value }))
+                  }
+                  placeholder="Actor filter (user/admin id)"
+                />
+                <input
+                  type="datetime-local"
+                  value={auditFilters.since_local}
+                  onChange={(e) =>
+                    setAuditFilters((prev) => ({ ...prev, since_local: e.target.value }))
+                  }
+                />
+                <input
+                  type="datetime-local"
+                  value={auditFilters.until_local}
+                  onChange={(e) =>
+                    setAuditFilters((prev) => ({ ...prev, until_local: e.target.value }))
+                  }
+                />
+                <input
+                  type="number"
+                  min="1"
+                  max="5000"
+                  value={auditFilters.limit}
+                  onChange={(e) =>
+                    setAuditFilters((prev) => ({ ...prev, limit: e.target.value }))
+                  }
+                  placeholder="Limit"
+                />
+                <div style={{ display: "flex", gap: 8 }}>
+                  <button className="btn-ghost btn-sm" onClick={handleApplyAuditFilters} disabled={busy || loading}>
+                    Apply
+                  </button>
+                  <button className="btn-ghost btn-sm" onClick={handleClearAuditFilters} disabled={busy || loading}>
+                    Clear
+                  </button>
+                </div>
+              </div>
               <div style={{ display: "flex", gap: 8, marginBottom: 8 }}>
                 <button className="btn-ghost btn-sm" onClick={() => handleExportAudit("jsonl")} disabled={busy}>
                   Export JSONL

@@ -160,6 +160,8 @@ async def evaluate_action(
         )
 
     # Evaluate
+    trust_before = float(engine.trust_score)
+    decision_before = engine._compute_decision()
     result = engine.evaluate_action(action)
     
     profile_store = get_profile_store(request)
@@ -173,6 +175,8 @@ async def evaluate_action(
     # Set state for AuditMiddleware
     request.state.user_id         = user_id
     request.state.session_id      = session_id
+    request.state.trust_score_before = trust_before
+    request.state.decision_before = decision_before
     request.state.zelvryn_decision = result.decision
     request.state.trust_score     = result.trust_score
     request.state.bot_prob        = result.bot_prob
@@ -401,11 +405,23 @@ async def delete_session(
     # Audit
     request.state.audit_event = {
         "event_type":     "session_closed",
+        "actor_id":       user_id,
         "user_id":        user_id,
         "session_id":     session_id,
         "final_trust":    final_trust,
         "total_actions":  total_actions,
         "risk_rating":    summary.get("risk_rating"),
+        "before_state": {
+            "session_open": True,
+            "trust_score": final_trust,
+            "total_actions": total_actions,
+        },
+        "after_state": {
+            "session_open": False,
+            "archived": archived,
+            "risk_rating": summary.get("risk_rating"),
+        },
+        "at": time.time(),
     }
 
     logger.info(

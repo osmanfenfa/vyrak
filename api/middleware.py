@@ -131,18 +131,29 @@ class AuditMiddleware(BaseHTTPMiddleware):
                 status_code = response.status_code,
             )
 
-        # Auto-audit CHALLENGE/BLOCK decisions from action endpoints
+        # Auto-audit all ALLOW/CHALLENGE/BLOCK decisions from action endpoints
         decision = getattr(request.state, "zelvryn_decision", None)
-        if decision in ("CHALLENGE", "BLOCK"):
+        if decision in ("ALLOW", "CHALLENGE", "BLOCK"):
             self._write_audit_entry(
                 event = {
                     "event_type":  f"session_{decision.lower()}",
+                    "actor_id":    getattr(request.state, "user_id", None),
                     "user_id":     getattr(request.state, "user_id", None),
                     "session_id":  getattr(request.state, "session_id", None),
                     "trust_score": getattr(request.state, "trust_score", None),
                     "bot_prob":    getattr(request.state, "bot_prob", None),
                     "anomalies":   getattr(request.state, "anomalies", []),
                     "decision":    decision,
+                    "before_state": {
+                        "decision": getattr(request.state, "decision_before", None),
+                        "trust_score": getattr(request.state, "trust_score_before", None),
+                    },
+                    "after_state": {
+                        "decision": decision,
+                        "trust_score": getattr(request.state, "trust_score", None),
+                        "bot_prob": getattr(request.state, "bot_prob", None),
+                        "anomalies": getattr(request.state, "anomalies", []),
+                    },
                 },
                 request_id  = getattr(request.state, "request_id", ""),
                 client_ip   = self._client_ip(request),

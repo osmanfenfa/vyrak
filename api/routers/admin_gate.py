@@ -21,6 +21,26 @@ router = APIRouter(
     },
 )
 
+_NEXT_RETRAIN_CYCLE_KEYS = {"ml_retrain_interval"}
+_IMMEDIATE_EFFECT_KEYS = {
+    "trust_initial",
+    "trust_decay_mild",
+    "trust_decay_moderate",
+    "trust_decay_severe",
+    "trust_decay_ai_bot",
+    "trust_recovery_rate",
+    "trust_challenge_threshold",
+    "trust_block_threshold",
+    "ml_bot_confidence_thresh",
+    "cold_start_ramp_actions",
+    "cold_start_ml_thresh",
+    "cold_start_temporal_limit",
+    "cold_start_recovery_rate",
+    "ewma_decay_factor",
+    "canary_traffic_percent",
+    "shadow_mode",
+}
+
 
 class RuntimeConfigPatch(BaseModel):
     trust_initial: Optional[float] = Field(default=None, ge=0.0, le=100.0)
@@ -80,6 +100,7 @@ async def admin_gate_home(
         "shadow_mode": bool(getattr(request.app.state, "shadow_mode", False)),
         "active_sessions": int(get_active_session_count()),
         "runtime_config": cfg,
+        "config_effects": _runtime_effect_catalog(),
         "model_registry": model_summary,
         "audit_log_file": AUDIT_LOG_FILE,
         "audit_log_exists": os.path.exists(AUDIT_LOG_FILE),
@@ -97,6 +118,7 @@ async def get_admin_config(
     return {
         "actor": admin_user,
         "config": cfg,
+        "config_effects": _runtime_effect_catalog(),
         "timestamp": time.time(),
     }
 
@@ -120,11 +142,14 @@ async def patch_admin_config(
     _validate_thresholds(merged)
 
     after = apply_runtime_patch(request.app, patch)
+    effects = _classify_runtime_effects(patch.keys())
 
     request.state.audit_event = {
         "event_type": "admin_config_changed",
         "actor_id": admin_user,
         "changed_keys": sorted(patch.keys()),
+        "effective_immediately": effects["effective_immediately"],
+        "effective_next_retrain_cycle": effects["effective_next_retrain_cycle"],
         "before_state": {k: before.get(k) for k in patch.keys()},
         "after_state": {k: after.get(k) for k in patch.keys()},
         "at": time.time(),
@@ -133,6 +158,9 @@ async def patch_admin_config(
     return {
         "updated": True,
         "changed_keys": sorted(patch.keys()),
+        "effective_immediately": effects["effective_immediately"],
+        "effective_next_retrain_cycle": effects["effective_next_retrain_cycle"],
+        "config_effects": _runtime_effect_catalog(),
         "config": after,
         "timestamp": time.time(),
     }
@@ -494,3 +522,28 @@ def _to_csv_cell(value: Any) -> str:
     if isinstance(value, (dict, list)):
         return json.dumps(value, separators=(",", ":"))
     return str(value)
+
+
+def _classify_runtime_effects(changed_keys) -> Dict[str, List[str]]:
+    immediate: List[str] = []
+    next_cycle: List[str] = []
+
+    for key in sorted(set(str(k) for k in changed_keys)):
+        if key in _NEXT_RETRAIN_CYCLE_KEYS:
+            next_cycle.append(key)
+        elif key in _IMMEDIATE_EFFECT_KEYS:
+            immediate.append(key)
+        else:
+            immediate.append(key)
+
+    return {
+        "effective_immediately": immediate,
+        "effective_next_retrain_cycle": next_cycle,
+    }
+
+
+def _runtime_effect_catalog() -> Dict[str, List[str]]:
+    return {
+        "effective_immediately": sorted(_IMMEDIATE_EFFECT_KEYS),
+        "effective_next_retrain_cycle": sorted(_NEXT_RETRAIN_CYCLE_KEYS),
+    }
