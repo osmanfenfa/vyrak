@@ -84,23 +84,10 @@ Full docs live in [`/docs`](./docs):
 
 ## 2025 Vyrak
 
----
-
-<div align="center">
-
-*Continuous trust. Persistent intelligence. Zero compromise.*
-
-</div>
-
----
-
-## Citation
-
-If you use Zelvryn in academic work, please cite:
 
 ```bibtex
 @software{zelvryn2025,
-  author    = {Vyrak},
+  author    = {Osman Fenfaquee},
   title     = {Zelvryn: Adaptive Behavioral Signature Authentication
                with Random Forest AI Mimic Detection},
   year      = {2025},
