@@ -1,8 +1,6 @@
 import { useCallback, useEffect, useState } from "react";
 import { adminGate } from "./api/client.js";
 
-const DEFAULT_ADMIN_USER = "admin@zelvryn.local";
-
 const CONFIG_FIELDS = [
   { key: "trust_initial", label: "Trust Initial", step: "0.1" },
   { key: "trust_decay_mild", label: "Trust Decay Mild", step: "0.1" },
@@ -86,8 +84,10 @@ function triggerDownload(blob, filename) {
   URL.revokeObjectURL(url);
 }
 
-export default function AdminGate() {
-  const [adminUser, setAdminUser] = useState(DEFAULT_ADMIN_USER);
+export default function AdminGate({ principal }) {
+  // Calls are authorised by the signed-in platform_admin token; the subject
+  // is only kept for display and audit context.
+  const adminUser = principal?.subject || "";
   const [loading, setLoading] = useState(false);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState(null);
@@ -113,7 +113,6 @@ export default function AdminGate() {
   const [rollbackVersion, setRollbackVersion] = useState("");
 
   const refresh = useCallback(async () => {
-    if (!adminUser.trim()) return;
     setLoading(true);
     setError(null);
     try {
@@ -285,35 +284,19 @@ export default function AdminGate() {
   };
 
   return (
-    <div className="app-shell">
-      <header className="app-header">
-        <div className="app-header-inner">
-          <div className="app-brand">
-            <div className="brand-mark">A</div>
-            <div>
-              <div className="brand-title">Zelvryn Admin Gate</div>
-              <div className="brand-subtitle">Live operations control panel</div>
+    <div style={{ display: "flex", flexDirection: "column", gap: 12 }}>
+        <div className="card" style={{ display: "flex", justifyContent: "space-between", alignItems: "center", gap: 12 }}>
+          <div>
+            <div className="card-title" style={{ marginBottom: 2 }}>Platform operations</div>
+            <div className="muted" style={{ fontSize: 13 }}>
+              Global thresholds, model registry and the full audit log. Signed in as{" "}
+              <span className="mono">{adminUser}</span> · shadow {overview?.shadow_mode ? "on" : "off"} ·{" "}
+              {overview?.active_sessions ?? 0} live sessions
             </div>
           </div>
           <button className="btn-ghost btn-sm" onClick={refresh} disabled={loading || busy}>
             {loading ? "Loading..." : "Refresh"}
           </button>
-        </div>
-      </header>
-
-      <main className="app-main" style={{ display: "flex", flexDirection: "column", gap: 12 }}>
-        <div className="card">
-          <div className="card-title">Admin Identity</div>
-          <div style={{ display: "grid", gridTemplateColumns: "1fr auto", gap: 8 }}>
-            <input
-              value={adminUser}
-              onChange={(e) => setAdminUser(e.target.value)}
-              placeholder="Admin user id"
-            />
-            <button className="btn-teal" onClick={refresh} disabled={loading || busy || !adminUser.trim()}>
-              Connect
-            </button>
-          </div>
         </div>
 
         {(error || notice) && (
@@ -517,11 +500,6 @@ export default function AdminGate() {
             </div>
           </section>
         </div>
-      </main>
-
-      <footer className="footer">
-        /admin-gate | shadow {overview?.shadow_mode ? "on" : "off"} | sessions {overview?.active_sessions ?? 0}
-      </footer>
     </div>
   );
 }

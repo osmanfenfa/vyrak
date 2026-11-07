@@ -87,6 +87,7 @@ class RequestLoggingMiddleware(BaseHTTPMiddleware):
             "client_ip":    self._client_ip(request),
             "request_id":   getattr(request.state, "request_id", ""),
             "user_id":      getattr(request.state, "user_id", None),
+            "tenant_id":    getattr(request.state, "tenant_id", None),
             "timestamp":    time.time(),
         }
 
@@ -97,10 +98,8 @@ class RequestLoggingMiddleware(BaseHTTPMiddleware):
 
     @staticmethod
     def _client_ip(request: Request) -> str:
-        forwarded = request.headers.get("X-Forwarded-For")
-        if forwarded:
-            return forwarded.split(",")[0].strip()
-        return request.client.host if request.client else "unknown"
+        from api.dependencies import client_ip
+        return client_ip(request)
 
 
 class AuditMiddleware(BaseHTTPMiddleware):
@@ -124,6 +123,10 @@ class AuditMiddleware(BaseHTTPMiddleware):
         # Check if a route handler set an audit event
         audit_event = getattr(request.state, "audit_event", None)
         if audit_event:
+            audit_event = {
+                "tenant_id": getattr(request.state, "tenant_id", None),
+                **audit_event,
+            }
             self._write_audit_entry(
                 event       = audit_event,
                 request_id  = getattr(request.state, "request_id", ""),
@@ -137,7 +140,11 @@ class AuditMiddleware(BaseHTTPMiddleware):
             self._write_audit_entry(
                 event = {
                     "event_type":  f"session_{decision.lower()}",
-                    "actor_id":    getattr(request.state, "user_id", None),
+                    "tenant_id":   getattr(request.state, "tenant_id", None),
+                    "actor_id":    getattr(request.state, "actor_id", None)
+                                   or getattr(request.state, "user_id", None),
+                    "would_be_decision": getattr(request.state, "would_be_decision", None),
+                    "reasons":     getattr(request.state, "reasons", []),
                     "user_id":     getattr(request.state, "user_id", None),
                     "session_id":  getattr(request.state, "session_id", None),
                     "trust_score": getattr(request.state, "trust_score", None),
@@ -188,10 +195,8 @@ class AuditMiddleware(BaseHTTPMiddleware):
 
     @staticmethod
     def _client_ip(request: Request) -> str:
-        forwarded = request.headers.get("X-Forwarded-For")
-        if forwarded:
-            return forwarded.split(",")[0].strip()
-        return request.client.host if request.client else "unknown"
+        from api.dependencies import client_ip
+        return client_ip(request)
 
 
 class SecurityHeadersMiddleware(BaseHTTPMiddleware):

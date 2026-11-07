@@ -17,6 +17,11 @@ from core.constants import (
     TEMPORAL_DEFAULT_STDEV,
     ADAPTIVE_THRESHOLD_RECOMPUTE_INTERVAL,
 )
+from detectors.sequence import SequenceModel
+from detectors.volume import VolumeBaseline
+from core.constants import IDENTITY_KIND_HUMAN, VOLUME_BUCKET_SECONDS
+
+MAX_INTRA_SESSION_GAP_S = 1800.0
 from core.math_utils import (
     coefficient_of_variation,
     ewma_update,
@@ -33,8 +38,14 @@ class BehavioralProfile:
     via EWMA to track legitimate behaviour drift.
     """
 
-    def __init__(self, user_id: str, created_at: Optional[float] = None) -> None:
+    def __init__(
+        self,
+        user_id: str,
+        created_at: Optional[float] = None,
+        identity_kind: str = IDENTITY_KIND_HUMAN,
+    ) -> None:
         self.user_id: str = user_id
+        self.identity_kind: str = identity_kind
         self.created_at: float = created_at if created_at is not None else time.time()
         self.last_updated: float = self.created_at
 
@@ -62,8 +73,14 @@ class BehavioralProfile:
         # ── Adaptive threshold ────────────────────────────────────────────
         self.adaptive_threshold: float = SIMILARITY_THRESHOLD
 
+        # ── Label-free detector state ─────────────────────────────────────
+        self.sequence_model: SequenceModel = SequenceModel()
+        self.volume: VolumeBaseline = VolumeBaseline(bucket_seconds=VOLUME_BUCKET_SECONDS)
+
         # ── Internal state ────────────────────────────────────────────────
         self._last_action_time: Optional[float] = None
+        self._last_action_type: Optional[str] = None
+        self._last_session_id: Optional[str] = None
         self._observations_since_threshold_update: int = 0
 
     # PRIMARY INTERFACE — recording actions
@@ -82,12 +99,24 @@ class BehavioralProfile:
         idx = action.to_index()
         self.vector_sum[idx] += 1.0
 
-        # Compute and record inter-action interval
+        same_session_seq = (action.session_id or "") == (self._last_session_id or "")
+
+        # Record the inter-action interval only within one session and only for
+        # gaps a person/agent could plausibly "think" for — the hours between
+        # sessions are not part of the rhythm and would wreck timing stats.
         if self._last_action_time is not None:
             interval = max(0.0, action.timestamp - self._last_action_time)
-            self._record_interval(interval)
+            same_session = (action.session_id or "") == (self._last_session_id or "")
+            if same_session and interval <= MAX_INTRA_SESSION_GAP_S:
+                self._record_interval(interval)
+        self._last_session_id = action.session_id or ""
 
         self._last_action_time = action.timestamp
+
+        # Learn action-order habits (only from verified-clean actions)
+        if self._last_action_type is not None and same_session_seq:
+            self.sequence_model.update(self._last_action_type, action.action_type)
+        self._last_action_type = action.action_type
 
         # Update EWMA frequency vector
         self._update_ewma_vector(action)
@@ -330,6 +359,9 @@ class BehavioralProfile:
             "ewma_std_interval":  self.ewma_std_interval,
             "adaptive_threshold": self.adaptive_threshold,
             "ml_training_count":  len(self.ml_training_data),
+            "identity_kind":      self.identity_kind,
+            "sequence_model":     self.sequence_model.to_dict(),
+            "volume":             self.volume.to_dict(),
             # ml_training_data is large; stored separately in the feature store
         }
 
@@ -350,6 +382,11 @@ class BehavioralProfile:
         profile = cls(
             user_id=data["user_id"],
             created_at=data.get("created_at"),
+            identity_kind=data.get("identity_kind", IDENTITY_KIND_HUMAN),
+        )
+        profile.sequence_model = SequenceModel.from_dict(data.get("sequence_model"))
+        profile.volume = VolumeBaseline.from_dict(
+            data.get("volume"), bucket_seconds=VOLUME_BUCKET_SECONDS
         )
         profile.last_updated        = data.get("last_updated", profile.created_at)
         profile.action_counts       = defaultdict(int, data.get("action_counts", {}))
@@ -368,6 +405,8 @@ class BehavioralProfile:
         # Restore last action time from history
         if profile.action_history:
             profile._last_action_time = profile.action_history[-1].timestamp
+            profile._last_action_type = profile.action_history[-1].action_type
+            profile._last_session_id = profile.action_history[-1].session_id or ""
 
         return profile
 

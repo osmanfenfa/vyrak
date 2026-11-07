@@ -4,11 +4,20 @@ tests/conftest.py
 Shared pytest fixtures used across unit, integration, and scenario tests.
 """
 
+import os
 import sys
+import tempfile
 import time
 from pathlib import Path
 
 import pytest
+
+# Test environment: development mode, explicit opt-in to plaintext dev tokens
+# ("<role>:<subject>" or "<subject>"; never available in production), audit
+# log out of the repo.
+os.environ.setdefault("ZELVRYN_ENV", "test")
+os.environ.setdefault("AUTH_ALLOW_PLAINTEXT_TOKENS", "true")
+os.environ.setdefault("AUDIT_LOG_DIR", tempfile.mkdtemp(prefix="zelvryn_audit_"))
 
 # Ensure project root is on path
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))

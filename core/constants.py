@@ -256,6 +256,43 @@ Default standard deviation of inter-action intervals used when a profile has few
 TEMPORAL_DEFAULT_MEAN: Final[float] = DEFAULT_TIMING_MEAN
 TEMPORAL_DEFAULT_STDEV: Final[float] = DEFAULT_TIMING_STDEV
 EWMA_MIN_OBSERVATIONS: Final[int] = _int("EWMA_MIN_OBSERVATIONS", 20)
+# LABEL-FREE DETECTORS (detectors/)
+
+SEQ_MIN_TRANSITIONS: Final[int] = _int("SEQ_MIN_TRANSITIONS", 40)
+"""Clean transitions an identity needs before the sequence model can fire."""
+
+SEQ_SURPRISE_MARGIN_BITS: Final[float] = _float("SEQ_SURPRISE_MARGIN_BITS", 1.6)
+"""Excess surprise (bits/transition) over the identity's entropy rate that fires UNUSUAL_SEQUENCE."""
+
+VOLUME_BUCKET_SECONDS: Final[int] = _int("VOLUME_BUCKET_SECONDS", 600)
+VOLUME_MIN_BUCKETS: Final[int] = _int("VOLUME_MIN_BUCKETS", 5)
+VOLUME_K_SIGMA: Final[float] = _float("VOLUME_K_SIGMA", 4.0)
+VOLUME_RATIO: Final[float] = _float("VOLUME_RATIO", 5.0)
+VOLUME_FLOOR_READ: Final[float] = _float("VOLUME_FLOOR_READ", 5000.0)
+VOLUME_FLOOR_EXPORT: Final[float] = _float("VOLUME_FLOOR_EXPORT", 500.0)
+VOLUME_FLOOR_DELETE: Final[float] = _float("VOLUME_FLOOR_DELETE", 100.0)
+
+VOLUME_FLOOR_MULTIPLIER_SERVICE: Final[float] = _float("VOLUME_FLOOR_MULTIPLIER_SERVICE", 10.0)
+VOLUME_FLOOR_MULTIPLIER_AGENT: Final[float] = _float("VOLUME_FLOOR_MULTIPLIER_AGENT", 2.0)
+"""New-identity volume limits scale by kind: integrations legitimately move data in bulk."""
+
+PEER_MIN_WINDOWS: Final[int] = _int("PEER_MIN_WINDOWS", 50)
+PEER_MIN_IDENTITIES: Final[int] = _int("PEER_MIN_IDENTITIES", 3)
+PEER_Z_LIMIT: Final[float] = _float("PEER_Z_LIMIT", 4.0)
+
+MACHINE_TIMING_MIN_INTERVALS: Final[int] = _int("MACHINE_TIMING_MIN_INTERVALS", 15)
+MACHINE_TIMING_MAX_CV: Final[float] = _float("MACHINE_TIMING_MAX_CV", 0.05)
+"""A human identity whose inter-action timing CV stays below this is machine-regular."""
+
+NEW_IDENTITY_SENSITIVE_SHARE: Final[float] = _float("NEW_IDENTITY_SENSITIVE_SHARE", 0.5)
+NEW_IDENTITY_BURST_SHARE: Final[float] = _float("NEW_IDENTITY_BURST_SHARE", 0.5)
+"""Cold-start rule: mostly sensitive actions, mostly sub-0.5s gaps, no history."""
+
+IDENTITY_KIND_HUMAN: Final[str] = "human"
+IDENTITY_KIND_AGENT: Final[str] = "agent"
+IDENTITY_KIND_SERVICE: Final[str] = "service"
+IDENTITY_KINDS: Final[frozenset] = frozenset({"human", "agent", "service"})
+
 DECISION_ALLOW:     Final[str] = "ALLOW"
 DECISION_CHALLENGE: Final[str] = "CHALLENGE"
 DECISION_BLOCK:     Final[str] = "BLOCK"
@@ -264,6 +301,12 @@ ANOMALY_HIGH_ENTROPY:         Final[str] = "HIGH_ENTROPY"
 ANOMALY_TEMPORAL_DRIFT:       Final[str] = "TEMPORAL_DRIFT"
 ANOMALY_ML_BOT_DETECTED:      Final[str] = "ML_BOT_DETECTED"
 ANOMALY_DUAL_SIGNAL_ESCALATION: Final[str] = "DUAL_SIGNAL_ESCALATION"
+ANOMALY_UNUSUAL_SEQUENCE:     Final[str] = "UNUSUAL_SEQUENCE"
+ANOMALY_VOLUME_SPIKE:         Final[str] = "VOLUME_SPIKE"
+ANOMALY_NEW_PRIVILEGED_ACTION: Final[str] = "NEW_PRIVILEGED_ACTION"
+ANOMALY_PEER_DEVIATION:       Final[str] = "PEER_DEVIATION"
+ANOMALY_MACHINE_TIMING:       Final[str] = "MACHINE_TIMING"
+ANOMALY_NEW_IDENTITY_SENSITIVE_BURST: Final[str] = "NEW_IDENTITY_SENSITIVE_BURST"
 
 RISK_LOW:      Final[str] = "LOW RISK"
 RISK_MEDIUM:   Final[str] = "MEDIUM RISK"

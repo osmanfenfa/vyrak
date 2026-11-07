@@ -1,17 +1,65 @@
-import { useCallback, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 
-import { useSessionLifecycle, useSession } from "./hooks/useSession.js";
-import { useProfile } from "./hooks/useProfile.js";
+import { AuthProvider } from "./auth/AuthContext.jsx";
+import { useAuth } from "./auth/useAuth.js";
 import { useModelStatus } from "./hooks/useModelStatus.js";
-
-import TrustGauge from "./components/TrustGauge.jsx";
-import ActionFeed from "./components/ActionFeed.jsx";
-import BotProbChart from "./components/BotProbChart.jsx";
-import FeatureImportance from "./components/FeatureImportance.jsx";
-import SessionSummary from "./components/SessionSummary.jsx";
-import ColdStartBadge from "./components/ColdStartBadge.jsx";
 import RiskBadge from "./components/RiskBadge.jsx";
-import { collectDeviceMetadata } from "./utils/deviceMetadata.js";
+
+import LoginScreen from "./views/LoginScreen.jsx";
+import LiveMonitor from "./views/LiveMonitor.jsx";
+import AlertsView from "./views/AlertsView.jsx";
+import IntegrationsView from "./views/IntegrationsView.jsx";
+import AdminGate from "./AdminGate.jsx";
+import CustomersView from "./views/CustomersView.jsx";
+import TeamView from "./views/TeamView.jsx";
+import AccountView from "./views/AccountView.jsx";
+import AcceptInvite from "./views/AcceptInvite.jsx";
+import ResetPassword from "./views/ResetPassword.jsx";
+import { parseHash } from "./utils/route.js";
+
+const ROLE_LABELS = {
+  platform_admin: "Platform operator",
+  admin: "Tenant admin",
+  analyst: "Analyst",
+  viewer: "Viewer",
+  integration: "Integration",
+  user: "User",
+};
+
+// Each tab is shown only to roles that can use it (the API enforces the same).
+// The platform operator works across customers, so they get operator tabs only.
+const isOperator = (roles) => roles.includes("platform_admin");
+
+const TABS = [
+  {
+    id: "customers", label: "Customers", component: CustomersView,
+    visible: (_can, roles) => isOperator(roles),
+  },
+  {
+    id: "alerts", label: "Alerts", component: AlertsView,
+    visible: (can, roles) => !isOperator(roles) && can("alerts:read"),
+  },
+  {
+    id: "monitor", label: "Live session", component: LiveMonitor,
+    visible: (can, roles) => !isOperator(roles) && (can("sessions:act_any") || roles.includes("user")),
+  },
+  {
+    id: "team", label: "Team", component: TeamView,
+    visible: (can, roles) => !isOperator(roles) && can("team:manage"),
+  },
+  {
+    id: "integrations", label: "Integrations", component: IntegrationsView,
+    visible: (can, roles) => !isOperator(roles) && (can("apikeys:manage") || can("events:ingest")),
+  },
+  {
+    id: "platform", label: "Platform settings", component: AdminGate,
+    visible: (_can, roles) => isOperator(roles),
+  },
+  {
+    id: "account", label: "Account", component: AccountView,
+    visible: () => true,
+  },
+];
 
 function formatUptime(seconds) {
   if (seconds < 60) return `${seconds}s`;
@@ -19,212 +67,119 @@ function formatUptime(seconds) {
   return `${(seconds / 3600).toFixed(1)}h`;
 }
 
-function Header({ modelStatus, isHealthy, shadowMode, uptime }) {
+function initialTab() {
+  const { path } = parseHash();
+  if (path) return path;
+  // Old deployments linked to /admin-gate
+  if (window.location.pathname.replace(/\/+$/, "") === "/admin-gate") return "platform";
+  return null;
+}
+
+function Header({ tabs, active, onSelect }) {
+  const { principal, signOut } = useAuth();
+  const { modelStatus, isHealthy, uptime, error } = useModelStatus();
+
   return (
     <header className="app-header">
       <div className="app-header-inner">
         <div className="app-brand">
           <div className="brand-mark">Z</div>
           <div>
-            <div className="brand-title">Zelvryn Dashboard</div>
-            <div className="brand-subtitle">
-              Adaptive Behavioral Signature Authentication
-            </div>
+            <div className="brand-title">Zelvryn</div>
+            <div className="brand-subtitle">{principal.tenant_id}</div>
           </div>
         </div>
 
+        <nav className="nav-tabs" aria-label="Sections">
+          {tabs.map((t) => (
+            <button key={t.id} className={`nav-tab ${active === t.id ? "nav-tab-active" : ""}`}
+              aria-current={active === t.id ? "page" : undefined} onClick={() => onSelect(t.id)}>
+              {t.label}
+            </button>
+          ))}
+        </nav>
+
         <div className="app-meta">
-          <RiskBadge label={isHealthy ? "healthy" : "degraded"} size="sm" />
-          {shadowMode && <span className="pill pill-shadow">SHADOW MODE</span>}
+          <RiskBadge label={error ? "down" : isHealthy ? "healthy" : "degraded"} size="sm" />
           {modelStatus?.active_version && (
-            <span className="mono muted">
-              {modelStatus.active_version}
-              {modelStatus.active_cv_f1 > 0
-                ? ` F1 ${(modelStatus.active_cv_f1 * 100).toFixed(0)}%`
-                : ""}
-            </span>
+            <span className="mono header-muted hide-sm">{modelStatus.active_version}</span>
           )}
-          {uptime > 0 && (
-            <span className="mono muted">{formatUptime(Math.round(uptime))}</span>
-          )}
+          {uptime > 0 && <span className="mono header-muted hide-sm">{formatUptime(Math.round(uptime))}</span>}
+          <div className="user-chip" title={principal.roles.join(", ")}>
+            <span className="user-name">{principal.subject}</span>
+            <span className="user-role">{principal.roles.map((r) => ROLE_LABELS[r] || r).join(", ")}</span>
+          </div>
+          <button className="btn-ghost btn-sm header-btn" onClick={() => signOut()}>Sign out</button>
         </div>
       </div>
     </header>
   );
 }
 
-function SessionStarter({ onStart, starting, error }) {
-  const [uid, setUid] = useState("zelvryn@example.com");
-  const [collecting, setCollecting] = useState(false);
-  const [metadataError, setMetadataError] = useState(null);
+function Console() {
+  const { principal, can } = useAuth();
+  const tabs = useMemo(
+    () => TABS.filter((t) => t.visible(can, principal.roles)),
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    [principal],
+  );
+  const [active, setActive] = useState(() => {
+    const wanted = initialTab();
+    return tabs.some((t) => t.id === wanted) ? wanted : tabs[0]?.id;
+  });
 
-  const handleStart = async () => {
-    if (!uid.trim() || starting || collecting) return;
+  useEffect(() => {
+    if (!tabs.some((t) => t.id === active)) setActive(tabs[0]?.id);
+  }, [tabs, active]);
 
-    setCollecting(true);
-    setMetadataError(null);
-    try {
-      const metadata = await collectDeviceMetadata();
-      await onStart(uid.trim(), metadata);
-    } catch {
-      // Continue even if metadata collection fails.
-      setMetadataError("Device metadata could not be fully collected.");
-      await onStart(uid.trim(), null);
-    } finally {
-      setCollecting(false);
-    }
+  const select = (id) => {
+    setActive(id);
+    window.history.replaceState(null, "", `/#/${id}`);
   };
 
+  const Current = tabs.find((t) => t.id === active)?.component;
+
   return (
-    <div className="card session-starter">
-      <div className="card-title">Start Session</div>
-      <p>Enter a user id to begin live monitoring with real device signals.</p>
-      <div style={{ display: "flex", flexDirection: "column", gap: 10 }}>
-        <input
-          value={uid}
-          onChange={(e) => setUid(e.target.value)}
-          placeholder="User ID or email"
-        />
-        <button
-          className="btn-teal"
-          onClick={handleStart}
-          disabled={starting || collecting || !uid.trim()}
-        >
-          {collecting ? "Collecting Device Data..." : starting ? "Starting..." : "Start Monitoring"}
-        </button>
-        <div className="starter-note">
-          Browser may ask for location permission. If denied, IP-level location is used.
-        </div>
-        {metadataError && <div className="error-bar">{metadataError}</div>}
-        {error && <div className="error-bar">{error}</div>}
-      </div>
+    <div className="app-shell">
+      <Header tabs={tabs} active={active} onSelect={select} />
+      <main className="app-main">
+        {Current ? (
+          <Current principal={principal} />
+        ) : (
+          <div className="card">
+            This credential has no dashboard sections. API keys with the integration role are meant for
+            your backend, not this console.
+          </div>
+        )}
+      </main>
+      <footer className="footer">Zelvryn · post-login behavioural protection</footer>
     </div>
   );
 }
 
+function useHashRoute() {
+  const [route, setRoute] = useState(parseHash);
+  useEffect(() => {
+    const onChange = () => setRoute(parseHash());
+    window.addEventListener("hashchange", onChange);
+    return () => window.removeEventListener("hashchange", onChange);
+  }, []);
+  return route;
+}
+
+function Root() {
+  const { principal } = useAuth();
+  const { path, params } = useHashRoute();
+  // Public pages reached from one-time links (work signed in or out)
+  if (path === "accept-invite") return <AcceptInvite token={params.get("token")} />;
+  if (path === "reset-password") return <ResetPassword token={params.get("token")} />;
+  return principal ? <Console /> : <LoginScreen />;
+}
+
 export default function App() {
-  const [sessionMetadata, setSessionMetadata] = useState(null);
-  const { modelStatus, isHealthy, shadowMode, uptime } = useModelStatus();
-  const {
-    sessionId,
-    userId,
-    starting,
-    error: startError,
-    start,
-    end,
-  } = useSessionLifecycle();
-  const handleSessionMissing = useCallback(async () => {
-    await end();
-    setSessionMetadata(null);
-  }, [end]);
-  const {
-    summary,
-    feed,
-    loading,
-    error: actionError,
-    submitAction,
-    restoreTrust,
-  } = useSession(sessionId, { onSessionMissing: handleSessionMissing });
-  const { profile } = useProfile(userId);
-
-  const latestFeed = feed[0];
-  const currentTrust = latestFeed?.trust_score ?? summary?.final_trust ?? 100;
-  const riskRating = summary?.risk_rating ?? "LOW RISK";
-  const rampActive = latestFeed?.ramp_active ?? false;
-
-  const handleStart = async (uid, metadata = null) => {
-    const data = await start(uid, metadata);
-    if (data) {
-      setSessionMetadata(metadata);
-    }
-    return data;
-  };
-
-  const handleEnd = async () => {
-    await end();
-    setSessionMetadata(null);
-  };
-
-  const handleSubmitAction = (actionType) =>
-    submitAction(actionType, "resource", sessionMetadata);
-
   return (
-    <div className="app-shell">
-      <Header
-        modelStatus={modelStatus}
-        isHealthy={isHealthy}
-        shadowMode={shadowMode}
-        uptime={uptime}
-      />
-
-      <main className="app-main">
-        {!sessionId ? (
-          <SessionStarter onStart={handleStart} starting={starting} error={startError} />
-        ) : (
-          <div className="dashboard-grid">
-            <section className="left-stack">
-              <div className="card">
-                <div className="session-meta">
-                  <div>
-                    <div style={{ fontWeight: 700 }}>{userId}</div>
-                    <div className="mono muted">
-                      {sessionId?.slice(0, 22)}...
-                    </div>
-                    <div className="session-signal-row mono muted">
-                      {sessionMetadata?.ip ? `IP ${sessionMetadata.ip}` : "IP unavailable"}
-                      {sessionMetadata?.geo_city ? ` • ${sessionMetadata.geo_city}` : ""}
-                      {sessionMetadata?.geo_country ? `, ${sessionMetadata.geo_country}` : ""}
-                    </div>
-                  </div>
-                  <button className="btn-ghost btn-sm" onClick={handleEnd}>
-                    End
-                  </button>
-                </div>
-              </div>
-
-              <div className="card" style={{ textAlign: "center" }}>
-                <TrustGauge
-                  score={currentTrust}
-                  label={riskRating}
-                  rampActive={rampActive}
-                />
-              </div>
-
-              {rampActive && (
-                <ColdStartBadge
-                  rampActive={rampActive}
-                  vectorCount={profile?.vector_count ?? 0}
-                  rampActions={50}
-                />
-              )}
-
-              {actionError && <div className="error-bar">{actionError}</div>}
-
-              <ActionFeed feed={feed} onSubmit={handleSubmitAction} loading={loading} />
-            </section>
-
-            <section className="right-stack">
-              <BotProbChart feed={feed} limit={40} />
-
-              <div className="split-grid">
-                <FeatureImportance
-                  features={summary?.top_features ?? []}
-                  title="Top Features"
-                />
-                <SessionSummary
-                  summary={summary}
-                  onRestore={() => restoreTrust(20)}
-                  onEnd={handleEnd}
-                />
-              </div>
-            </section>
-          </div>
-        )}
-      </main>
-
-      <footer className="footer">
-        Zelvryn v2.0 | Adaptive Behavioral Signature Authentication
-      </footer>
-    </div>
+    <AuthProvider>
+      <Root />
+    </AuthProvider>
   );
 }

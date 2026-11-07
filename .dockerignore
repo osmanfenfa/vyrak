@@ -1,0 +1,15 @@
+.git
+.venv
+venv
+**/__pycache__
+**/*.pyc
+.pytest_cache
+.env
+.env.*
+dashboard
+logs
+reports
+tests
+data/raw
+data/shadow_exports
+desktop.ini

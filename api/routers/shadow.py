@@ -8,11 +8,10 @@ import time
 from typing import Annotated, Optional
 from fastapi import APIRouter, Depends, HTTPException, Query, Request, status
 
+from api.auth import Principal, require_permission
 from api.dependencies import (
-    get_current_user,
     get_feature_store,
     get_profile_store,
-    require_admin,
     rate_limit_check,
 )
 from api.schemas import (
@@ -57,17 +56,18 @@ _EXPORT_DIR = os.environ.get("SHADOW_EXPORT_DIR", "data/shadow_exports")
 async def shadow_ingest(
     body:       ShadowIngestRequest,
     request:    Request,
-    admin_user: Annotated[str, Depends(require_admin)],
+    principal: Annotated[Principal, Depends(require_permission("shadow:run"))],
     _rate:      Annotated[None, Depends(rate_limit_check)] = None,
 ) -> ShadowIngestResponse:
     t_start = time.time()
-    profile_store = get_profile_store(request)
+    admin_user = principal.subject
+    profile_store = get_profile_store(request).for_tenant(principal.tenant_id)
     processed = errors = blocks = challenges = 0
 
     for event in body.events:
         try:
             user_id    = str(event.get("user_id", "unknown"))
-            session_id = str(event.get("session_id", f"{user_id}_shadow"))
+            session_id = f"{principal.tenant_id}:" + str(event.get("session_id", f"{user_id}_shadow"))
             action_str = str(event.get("action_type", "read"))
             resource   = str(event.get("resource_id", "unknown"))
             timestamp  = float(event.get("timestamp") or time.time())
@@ -185,12 +185,13 @@ async def shadow_ingest(
 )
 async def export_shadow_data(
     request:        Request,
-    admin_user:     Annotated[str, Depends(require_admin)],
+    principal:     Annotated[Principal, Depends(require_permission("shadow:run"))],
     session_id:     Optional[str]  = Query(None, description="Export a specific session only."),
     format:         str            = Query("jsonl", pattern="^(jsonl|csv)$"),
     verified_only:  bool           = Query(False),
     pseudonymise:   bool           = Query(True),
 ) -> ShadowExportResponse:
+    admin_user = principal.subject
     """
     Export shadow session data as a training dataset.
     """
@@ -282,7 +283,7 @@ async def export_shadow_data(
 )
 async def shadow_stats(
     request:    Request,
-    admin_user: Annotated[str, Depends(require_admin)],
+    principal: Annotated[Principal, Depends(require_permission("shadow:run"))],
 ) -> dict:
     """
     Return aggregate statistics across all shadow sessions.
@@ -334,11 +335,12 @@ async def shadow_stats(
 )
 async def verify_shadow_entry(
     request:    Request,
-    admin_user: Annotated[str, Depends(require_admin)],
+    principal: Annotated[Principal, Depends(require_permission("shadow:run"))],
     session_id: str   = Query(..., description="Session ID of the entry to verify."),
     timestamp:  float = Query(..., description="Timestamp of the action entry."),
     label:      int   = Query(..., ge=0, le=1, description="Verified label: 0=human, 1=bot."),
 ) -> dict:
+    admin_user = principal.subject
     """
     Set an analyst-verified label on a shadow log entry.
     """

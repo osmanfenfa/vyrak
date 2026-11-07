@@ -44,7 +44,7 @@ def client():
 
 
 HEADERS = {"Authorization": "Bearer profile_user"}
-ADMIN_HEADERS = {"Authorization": "Bearer admin_user"}
+ADMIN_HEADERS = {"Authorization": "Bearer admin:admin_user"}
 
 
 class TestGetProfile:
@@ -108,7 +108,7 @@ class TestResetProfile:
 
     def test_reset_with_admin_token(self, client):
         r = client.post("/profile/profile_user/reset", headers=ADMIN_HEADERS)
-        # Admin (any token grants admin in dev mode) → 200
+        # Tenant admin role → 200
         assert r.status_code == 200
 
     def test_reset_response_shape(self, client):

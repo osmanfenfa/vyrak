@@ -128,14 +128,14 @@ export function useSessionLifecycle() {
   const [starting, setStarting] = useState(false);
   const [error, setError] = useState(null);
 
-  const start = useCallback(async (uid, metadata = null) => {
+  const start = useCallback(async (uid, metadata = null, options = {}) => {
     setStarting(true);
     setError(null);
 
     try {
-      const data = await sessions.start(uid, metadata);
+      const data = await sessions.start(uid, metadata, options);
       setSessionId(data.session_id);
-      setUserId(uid);
+      setUserId(data.user_id || uid);
       return data;
     } catch (e) {
       setError(e.message);

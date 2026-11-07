@@ -9,6 +9,7 @@ from fastapi import APIRouter, Depends, HTTPException, Query, Request, Response,
 from pydantic import BaseModel, Field, model_validator
 
 from api.admin_runtime import apply_runtime_patch, get_runtime_config
+from api.auth import ROLE_PLATFORM_ADMIN, Principal, require_permission
 from api.dependencies import get_active_session_count, require_admin
 from api.middleware import AUDIT_LOG_FILE
 
@@ -98,7 +99,7 @@ async def admin_gate_home(
         "route": "/admin-gate",
         "actor": admin_user,
         "shadow_mode": bool(getattr(request.app.state, "shadow_mode", False)),
-        "active_sessions": int(get_active_session_count()),
+        "active_sessions": int(get_active_session_count(request)),
         "runtime_config": cfg,
         "config_effects": _runtime_effect_catalog(),
         "model_registry": model_summary,
@@ -342,7 +343,7 @@ async def rollback_model(
 @router.get("/audit", status_code=status.HTTP_200_OK)
 async def query_audit_logs(
     request: Request,
-    admin_user: str = Depends(require_admin),
+    principal: Principal = Depends(require_permission("audit:read")),
     limit: int = Query(default=200, ge=1, le=5_000),
     offset: int = Query(default=0, ge=0, le=200_000),
     event_type: Optional[str] = Query(default=None),
@@ -350,7 +351,8 @@ async def query_audit_logs(
     since_ts: Optional[float] = Query(default=None),
     until_ts: Optional[float] = Query(default=None),
 ) -> Dict[str, Any]:
-    entries = _load_audit_entries()
+    admin_user = principal.subject
+    entries = _tenant_scope(_load_audit_entries(), principal)
     filtered = _filter_audit_entries(
         entries=entries,
         event_type=event_type,
@@ -374,7 +376,7 @@ async def query_audit_logs(
 @router.get("/audit/export")
 async def export_audit_logs(
     request: Request,
-    admin_user: str = Depends(require_admin),
+    principal: Principal = Depends(require_permission("audit:read")),
     format: str = Query(default="jsonl", pattern="^(jsonl|json|csv)$"),
     event_type: Optional[str] = Query(default=None),
     actor_id: Optional[str] = Query(default=None),
@@ -382,7 +384,8 @@ async def export_audit_logs(
     until_ts: Optional[float] = Query(default=None),
     limit: int = Query(default=20_000, ge=1, le=200_000),
 ) -> Response:
-    entries = _load_audit_entries()
+    admin_user = principal.subject
+    entries = _tenant_scope(_load_audit_entries(), principal)
     filtered = _filter_audit_entries(
         entries=entries,
         event_type=event_type,
@@ -456,6 +459,13 @@ def _validate_thresholds(cfg: Dict[str, Any]) -> None:
                 "trust_challenge_threshold."
             ),
         )
+
+
+def _tenant_scope(entries: List[Dict[str, Any]], principal: Principal) -> List[Dict[str, Any]]:
+    """Platform admins see everything; everyone else sees only their tenant."""
+    if ROLE_PLATFORM_ADMIN in principal.roles:
+        return entries
+    return [e for e in entries if (e.get("tenant_id") or "default") == principal.tenant_id]
 
 
 def _load_audit_entries() -> List[Dict[str, Any]]:

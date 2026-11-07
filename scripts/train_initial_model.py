@@ -158,41 +158,48 @@ def train(X, y, n_trees: int, max_depth: int, seed: int):
 
 def save_and_register(clf, metrics: dict, n_samples: int, n_human: int, n_bot: int,
                       model_dir: str, version: str):
-    import joblib
-    Path(model_dir).mkdir(parents=True, exist_ok=True)
-    path = os.path.join(model_dir, f"{version}.joblib")
-    joblib.dump({"sklearn_model": clf, "n_trees": clf.n_estimators,
-                 "max_depth": clf.max_depth, "n_samples": n_samples,
-                 "training_timestamp": time.time(),
-                 "feature_importances": list(clf.feature_importances_)}, path)
+    """
+    Save through the shared classifier format and register through
+    ModelRegistry, so the file is loadable by the API and its SHA-256
+    checksum is recorded (the API refuses unverified models in production).
+    """
+    from core.classifier import RandomForestClassifier as ZelvrynRF
+    from ml.registry import ModelRegistry
+
+    model_dir_path = Path(model_dir).resolve()
+    model_dir_path.mkdir(parents=True, exist_ok=True)
+
+    wrapped = ZelvrynRF(n_trees=clf.n_estimators, max_depth=clf.max_depth)
+    wrapped._model = clf
+    clf.n_jobs = 1                      # single-row inference is faster unthreaded
+    wrapped.is_trained = True
+    wrapped.n_samples = n_samples
+    wrapped.training_timestamp = time.time()
+    wrapped.feature_importances_ = [float(v) for v in clf.feature_importances_]
+
+    abs_path = model_dir_path / f"{version}.joblib"
+    wrapped.save_model(str(abs_path))
+    # Store a path relative to the project root when possible, so the
+    # registry works on other machines and inside Docker.
+    try:
+        path = abs_path.relative_to(ROOT).as_posix()
+    except ValueError:
+        path = str(abs_path)
     log.info("Model saved → %s", path)
 
-    reg_path = os.path.join(model_dir, "model_registry.json")
+    cwd = os.getcwd()
+    os.chdir(ROOT)                      # registry resolves relative paths from the root
     try:
-        with open(reg_path) as f:
-            reg = json.load(f)
-    except Exception:
-        reg = {"active_version": None, "canary_version": None,
-               "canary_traffic_percent": 5, "versions": {}}
-
-    # Retire any current active
-    for v, mv in reg.get("versions", {}).items():
-        if mv.get("state") == "active":
-            mv["state"] = "retired"
-            mv["retired_at"] = time.time()
-
-    reg["versions"][version] = {
-        "version": version, "model_path": path, "state": "active",
-        "n_samples": n_samples, "n_human": n_human, "n_bot": n_bot,
-        "cv_f1": metrics["f1"], "cv_far": metrics["far"], "cv_frr": metrics["frr"],
-        "trained_at": time.time(), "promoted_at": time.time(),
-        "retired_at": None, "notes": "",
-    }
-    reg["active_version"] = version
-    reg["saved_at"]       = time.time()
-    with open(reg_path, "w") as f:
-        json.dump(reg, f, indent=2)
-    log.info("Registry updated  → active=%s", version)
+        reg = ModelRegistry(registry_dir=str(model_dir_path))
+        reg.register(
+            version, path, n_samples=n_samples, n_human=n_human, n_bot=n_bot,
+            cv_f1=metrics["f1"], cv_far=metrics["far"], cv_frr=metrics["frr"],
+            notes="Trained by scripts/train_initial_model.py",
+        )
+        reg.promote(version, notes="initial model")
+    finally:
+        os.chdir(cwd)
+    log.info("Registry updated  → active=%s (checksum recorded)", version)
     return path
 
 

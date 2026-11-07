@@ -43,6 +43,27 @@ def shannon_entropy(
 
     return min(1.0, entropy / max_entropy)
 
+def action_space_entropy(action_types: Sequence[str], num_types: int = 8) -> float:
+    """
+    Shannon entropy normalised by the whole action space (log2 of num_types).
+
+    Unlike ``shannon_entropy`` (normalised by the types *present*, kept as-is
+    because trained models use it as a feature), a balanced two-type routine
+    scores 0.33 here, not 1.0 — only genuinely scattered behaviour is high.
+    """
+    if not action_types or num_types <= 1:
+        return 0.0
+    counts: defaultdict = defaultdict(int)
+    for a in action_types:
+        counts[a] += 1
+    total = len(action_types)
+    h = 0.0
+    for c in counts.values():
+        p = c / total
+        h -= p * math.log2(p)
+    return min(1.0, h / math.log2(num_types))
+
+
 # 2. COSINE SIMILARITY
 def cosine_similarity(
     vec_a: Sequence[float],
@@ -112,7 +133,7 @@ def build_live_vector(
         return vec
 
     for action in actions:
-        idx = action.to_index()
+        idx = action if isinstance(action, int) else action.to_index()
         if 0 <= idx < num_types:
             vec[idx] += 1.0
 

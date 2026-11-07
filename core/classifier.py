@@ -34,6 +34,16 @@ class RandomForestClassifier:
     Production Random Forest classifier for human vs bot behavioural classification.
     """
 
+    MODEL_TYPE = "random_forest"
+
+    def _fresh(self) -> "RandomForestClassifier":
+        return type(self)(
+            n_trees=self.n_trees,
+            max_depth=self.max_depth,
+            min_samples_split=self.min_samples_split,
+            random_state=self.random_state,
+        )
+
     def __init__(
         self,
         n_trees: int = ML_NUM_TREES,
@@ -106,6 +116,9 @@ class RandomForestClassifier:
             random_state=self.random_state,
         )
         self._model.fit(X, y)
+        # Train in parallel, but predict single-threaded: per-action inference
+        # scores one row at a time, where joblib dispatch costs more than it saves.
+        self._model.n_jobs = 1
 
         self.is_trained          = True
         self.n_samples           = len(X)
@@ -185,13 +198,8 @@ class RandomForestClassifier:
             X_val   = [X[i] for i in val_idx]
             y_val   = [y[i] for i in val_idx]
 
-            # Train a temporary model for this fold
-            fold_clf = RandomForestClassifier(
-                n_trees=self.n_trees,
-                max_depth=self.max_depth,
-                min_samples_split=self.min_samples_split,
-                random_state=self.random_state,
-            )
+            # Train a temporary model of the same type for this fold
+            fold_clf = self._fresh()
             try:
                 fold_clf.fit(X_train, y_train)
             except ValueError:
@@ -234,7 +242,8 @@ class RandomForestClassifier:
         """
         if not self.is_trained or not X:
             return 0.0
-        predictions = [self.predict(x) for x in X]
+        probs = self.predict_batch(X)
+        predictions = [1 if p >= ML_BOT_CONFIDENCE_THRESH else 0 for p in probs]
         return sum(p == t for p, t in zip(predictions, y)) / len(y)
 
     # FEATURE IMPORTANCE
@@ -292,6 +301,7 @@ class RandomForestClassifier:
             "n_samples":           self.n_samples,
             "training_timestamp":  self.training_timestamp,
             "feature_importances": self.feature_importances_,
+            "model_type":          self.MODEL_TYPE,
         }
         joblib.dump(payload, path)
         logger.info("Model saved to %s", path)
@@ -311,13 +321,18 @@ class RandomForestClassifier:
 
         payload = joblib.load(path)
 
+        if payload.get("model_type") == "gbm" and cls is RandomForestClassifier:
+            cls = CalibratedGBMClassifier
+        # .get(): files written by older scripts omit some hyper-parameters
         instance = cls(
-            n_trees=payload["n_trees"],
-            max_depth=payload["max_depth"],
-            min_samples_split=payload["min_samples_split"],
-            random_state=payload["random_state"],
+            n_trees=payload.get("n_trees", ML_NUM_TREES),
+            max_depth=payload.get("max_depth", ML_MAX_DEPTH),
+            min_samples_split=payload.get("min_samples_split", ML_MIN_SAMPLES_SPLIT),
+            random_state=payload.get("random_state", 42),
         )
         instance._model              = payload["sklearn_model"]
+        if hasattr(instance._model, "n_jobs"):
+            instance._model.n_jobs = 1
         instance.n_samples           = payload["n_samples"]
         instance.training_timestamp  = payload["training_timestamp"]
         instance.feature_importances_ = payload.get("feature_importances", [])
@@ -385,3 +400,53 @@ class RandomForestClassifier:
             f"max_depth={self.max_depth}, "
             f"{status})"
         )
+
+class CalibratedGBMClassifier(RandomForestClassifier):
+    """
+    Gradient-boosted trees with probability calibration.
+
+    Why: on tabular features like these, gradient boosting usually beats a
+    random forest, and calibration makes P(bot) mean what it says (0.8 ≈ 80%
+    of such windows really are automated), so thresholds are interpretable.
+
+    Same interface as RandomForestClassifier, so the registry, engine and
+    canary rollout work unchanged. ``n_trees`` = boosting iterations.
+    """
+
+    MODEL_TYPE = "gbm"
+
+    def __init__(self, n_trees: int = 200, max_depth: int = 4,
+                 min_samples_split: int = 20, random_state: int = 42) -> None:
+        super().__init__(n_trees=n_trees, max_depth=max_depth,
+                         min_samples_split=min_samples_split, random_state=random_state)
+
+    def fit(self, X: List[List[float]], y: List[int]) -> "CalibratedGBMClassifier":
+        if len(X) < ML_MIN_TRAIN_SAMPLES:
+            raise ValueError(
+                f"Need at least {ML_MIN_TRAIN_SAMPLES} samples to train, got {len(X)}."
+            )
+        if len(set(y)) < 2:
+            raise ValueError("Training data must contain both classes (0 and 1).")
+        from sklearn.calibration import CalibratedClassifierCV
+        from sklearn.ensemble import HistGradientBoostingClassifier
+
+        base = HistGradientBoostingClassifier(
+            max_iter=self.n_trees,
+            max_depth=self.max_depth,
+            min_samples_leaf=max(5, self.min_samples_split // 2),
+            learning_rate=0.08,
+            class_weight="balanced",
+            random_state=self.random_state,
+        )
+        minority = min(sum(y), len(y) - sum(y))
+        method = "isotonic" if minority >= 100 else "sigmoid"
+        self._model = CalibratedClassifierCV(base, method=method, cv=min(3, max(2, minority)))
+        t0 = time.time()
+        self._model.fit(X, y)
+        self.is_trained = True
+        self.n_samples = len(X)
+        self.training_timestamp = time.time()
+        logger.info("Calibrated GBM trained in %.2fs (%s calibration).",
+                    self.training_timestamp - t0, method)
+        self._compute_permutation_importance(X, y)
+        return self

@@ -113,7 +113,8 @@ class PopulationPriorProfile:
         self.std_interval: float                   = TEMPORAL_DEFAULT_STDEV
         self.median_adaptive_threshold: float      = SIMILARITY_THRESHOLD
         self.source_profile_count: int             = 0
-        self.built_at: float                       = time.time()
+        # 0.0 = never built from real profiles (is_stale() → True)
+        self.built_at: float                       = 0.0
         self.deployment_context: str               = "default"
 
     # ─────────────────────────────────────────────────────────────────────────

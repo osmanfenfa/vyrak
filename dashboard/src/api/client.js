@@ -1,39 +1,28 @@
+/**
+ * Zelvryn API client.
+ *
+ * One credential per browser tab: a JWT (from email/password sign-in or your
+ * identity provider) or an API key. It is attached to every
+ * request automatically. A 401 clears it and notifies the app so the user is
+ * sent back to the sign-in screen.
+ */
+
 const API_BASE =
   (import.meta.env.VITE_API_BASE_URL || "http://localhost:8000").replace(/\/$/, "");
 
-const USER_STORAGE_KEY = "zelvryn.user_id";
+let authToken = null;
+let onUnauthorized = null;
 
-function getStoredUserId() {
-  try {
-    return window.localStorage.getItem(USER_STORAGE_KEY);
-  } catch {
-    return null;
-  }
+export function setAuthToken(token) {
+  authToken = token || null;
 }
 
-function setStoredUserId(userId) {
-  try {
-    window.localStorage.setItem(USER_STORAGE_KEY, userId);
-  } catch {
-    // Ignore storage failures in restricted browser contexts.
-  }
+export function setUnauthorizedHandler(handler) {
+  onUnauthorized = handler;
 }
 
-function normalizeUserId(userId) {
-  return typeof userId === "string" ? userId.trim() : "";
-}
-
-function buildHeaders({ authToken, extraHeaders } = {}) {
-  const headers = {
-    "Content-Type": "application/json",
-    ...(extraHeaders || {}),
-  };
-
-  if (authToken) {
-    headers.Authorization = `Bearer ${authToken}`;
-  }
-
-  return headers;
+export function apiBase() {
+  return API_BASE;
 }
 
 function buildQueryString(params = {}) {
@@ -56,63 +45,53 @@ async function parsePayload(response) {
   }
 }
 
-async function request(path, options = {}) {
-  const {
-    method = "GET",
-    body,
-    authToken,
-    extraHeaders,
-  } = options;
+function errorFrom(response, payload) {
+  const detail = payload?.detail;
+  const message =
+    (typeof detail === "string" && detail) ||
+    payload?.message ||
+    (Array.isArray(payload?.errors) && payload.errors[0]?.msg) ||
+    `Request failed with status ${response.status}`;
+  const error = new Error(message);
+  error.status = response.status;
+  error.payload = payload;
+  return error;
+}
 
-  const response = await fetch(`${API_BASE}${path}`, {
-    method,
-    headers: buildHeaders({ authToken, extraHeaders }),
-    body: body ? JSON.stringify(body) : undefined,
-  });
+async function send(path, { method = "GET", body, token, auth = true } = {}) {
+  const headers = { "Content-Type": "application/json" };
+  const bearer = token ?? (auth ? authToken : null);
+  if (bearer) headers.Authorization = `Bearer ${bearer}`;
 
-  const payload = await parsePayload(response);
-
-  if (!response.ok) {
-    const message =
-      payload?.detail ||
-      payload?.message ||
-      `Request failed with status ${response.status}`;
-
-    const error = new Error(message);
-    error.status = response.status;
-    error.payload = payload;
+  let response;
+  try {
+    response = await fetch(`${API_BASE}${path}`, {
+      method,
+      headers,
+      body: body !== undefined ? JSON.stringify(body) : undefined,
+    });
+  } catch {
+    const error = new Error(`Cannot reach the API at ${API_BASE}. Is it running?`);
+    error.status = 0;
     throw error;
   }
 
+  if (response.status === 401 && auth && !token && authToken && onUnauthorized) {
+    onUnauthorized();
+  }
+  return response;
+}
+
+async function request(path, options = {}) {
+  const response = await send(path, options);
+  const payload = await parsePayload(response);
+  if (!response.ok) throw errorFrom(response, payload);
   return payload;
 }
 
 async function requestBlob(path, options = {}) {
-  const {
-    method = "GET",
-    body,
-    authToken,
-    extraHeaders,
-  } = options;
-
-  const response = await fetch(`${API_BASE}${path}`, {
-    method,
-    headers: buildHeaders({ authToken, extraHeaders }),
-    body: body ? JSON.stringify(body) : undefined,
-  });
-
-  if (!response.ok) {
-    const payload = await parsePayload(response);
-    const message =
-      payload?.detail ||
-      payload?.message ||
-      `Request failed with status ${response.status}`;
-    const error = new Error(message);
-    error.status = response.status;
-    error.payload = payload;
-    throw error;
-  }
-
+  const response = await send(path, options);
+  if (!response.ok) throw errorFrom(response, await parsePayload(response));
   const blob = await response.blob();
   const disposition = response.headers.get("Content-Disposition") || "";
   const filenameMatch = disposition.match(/filename="?([^"]+)"?/i);
@@ -123,193 +102,234 @@ async function requestBlob(path, options = {}) {
   };
 }
 
-function authForUser(userId) {
-  const explicitUser = normalizeUserId(userId);
-  if (explicitUser) return explicitUser;
-
-  const storedUser = normalizeUserId(getStoredUserId());
-  if (storedUser) return storedUser;
-
-  return null;
-}
-
-function requireAuthUser(userId, contextLabel) {
-  const resolved = authForUser(userId);
-  if (resolved) return resolved;
-
-  const error = new Error(
-    `No user available for ${contextLabel}. Start a session with a valid user ID first.`,
-  );
-  error.status = 400;
-  throw error;
-}
-
-export const health = {
-  get() {
-    return request("/health");
+// ── Auth & accounts ────────────────────────────────────────────────────────
+export const auth = {
+  /** Who does this credential belong to? Used to validate a pasted token. */
+  me(token) {
+    return request("/auth/me", { token });
   },
-  model() {
-    return request("/health/model");
+  login(email, password) {
+    return request("/auth/login", { method: "POST", auth: false, body: { email, password } });
+  },
+  describeInvite(token) {
+    return request(`/auth/invites/${encodeURIComponent(token)}`, { auth: false });
+  },
+  acceptInvite(token, name, password) {
+    return request("/auth/accept-invite", { method: "POST", auth: false, body: { token, name, password } });
+  },
+  resetPassword(token, password) {
+    return request("/auth/reset-password", { method: "POST", auth: false, body: { token, password } });
+  },
+  account() {
+    return request("/auth/account");
+  },
+  changePassword(currentPassword, newPassword) {
+    return request("/auth/change-password", {
+      method: "POST",
+      body: { current_password: currentPassword, new_password: newPassword },
+    });
   },
 };
 
-export const sessions = {
-  async start(userId, metadata = null) {
-    const cleanUserId = normalizeUserId(userId);
-    if (!cleanUserId) {
-      const error = new Error("User ID is required to start a session.");
-      error.status = 400;
-      throw error;
-    }
+// ── Team (tenant admin) ────────────────────────────────────────────────────
+export const team = {
+  list() {
+    return request("/team/users");
+  },
+  invite(email, role, name = "") {
+    return request("/team/invites", { method: "POST", body: { email, role, name } });
+  },
+  update(email, patch) {
+    return request(`/team/users/${encodeURIComponent(email)}`, { method: "PATCH", body: patch });
+  },
+  inviteLink(email) {
+    return request(`/team/users/${encodeURIComponent(email)}/invite-link`, { method: "POST" });
+  },
+  resetLink(email) {
+    return request(`/team/users/${encodeURIComponent(email)}/reset-link`, { method: "POST" });
+  },
+};
 
-    const token = requireAuthUser(cleanUserId, "session start");
-    const data = await request("/session/start", {
+// ── Customers (platform operator) ──────────────────────────────────────────
+export const customers = {
+  list() {
+    return request("/platform/customers");
+  },
+  create(payload) {
+    return request("/platform/customers", { method: "POST", body: payload });
+  },
+  get(tenantId) {
+    return request(`/platform/customers/${encodeURIComponent(tenantId)}`);
+  },
+  update(tenantId, patch) {
+    return request(`/platform/customers/${encodeURIComponent(tenantId)}`, { method: "PATCH", body: patch });
+  },
+  inviteAdmin(tenantId, email, name = "") {
+    return request(`/platform/customers/${encodeURIComponent(tenantId)}/admins`, {
       method: "POST",
-      authToken: token,
+      body: { email, name },
+    });
+  },
+};
+
+// ── Health ─────────────────────────────────────────────────────────────────
+export const health = {
+  get() {
+    return request("/health", { auth: false });
+  },
+  model() {
+    return request("/health/model", { auth: false });
+  },
+};
+
+// ── Sessions ───────────────────────────────────────────────────────────────
+export const sessions = {
+  start(userId, metadata = null, options = {}) {
+    return request("/session/start", {
+      method: "POST",
       body: {
-        user_id: cleanUserId,
+        user_id: userId,
         metadata,
+        identity_kind: options.identityKind || "human",
+        peer_group: options.peerGroup || null,
       },
     });
-    setStoredUserId(cleanUserId);
-    return data;
   },
-
   summary(sessionId) {
-    return request(`/session/${sessionId}/summary`, {
-      authToken: requireAuthUser(null, "session summary"),
-    });
+    return request(`/session/${sessionId}/summary`);
   },
-
   action(sessionId, actionType, resourceId = "resource", metadata = null) {
     return request(`/session/${sessionId}/action`, {
       method: "POST",
-      authToken: requireAuthUser(null, "session action"),
-      body: {
-        action_type: actionType,
-        resource_id: resourceId,
-        metadata,
-      },
+      body: { action_type: actionType, resource_id: resourceId, metadata },
     });
   },
-
   restoreTrust(sessionId, increment = 20, reason = "re_authentication") {
     return request(`/session/${sessionId}/restore-trust`, {
       method: "POST",
-      authToken: requireAuthUser(null, "restore trust"),
-      body: {
-        increment,
-        reason,
-      },
+      body: { increment, reason },
     });
   },
-
   end(sessionId) {
-    return request(`/session/${sessionId}`, {
-      method: "DELETE",
-      authToken: requireAuthUser(null, "session end"),
-    });
+    return request(`/session/${sessionId}`, { method: "DELETE" });
   },
 };
 
+// ── Profiles ───────────────────────────────────────────────────────────────
 export const profiles = {
   get(userId) {
-    return request(`/profile/${encodeURIComponent(userId)}`, {
-      authToken: requireAuthUser(userId, "profile read"),
-    });
+    return request(`/profile/${encodeURIComponent(userId)}`);
   },
-
   reset(userId) {
-    return request(`/profile/${encodeURIComponent(userId)}/reset`, {
-      method: "POST",
-      authToken: requireAuthUser(userId, "profile reset"),
-    });
+    return request(`/profile/${encodeURIComponent(userId)}/reset`, { method: "POST" });
   },
-
   delete(userId) {
-    return request(`/profile/${encodeURIComponent(userId)}`, {
-      method: "DELETE",
-      authToken: requireAuthUser(userId, "profile delete"),
-    });
+    return request(`/profile/${encodeURIComponent(userId)}`, { method: "DELETE" });
   },
 };
 
-export const adminGate = {
-  overview(userId) {
-    return request("/admin-gate", {
-      authToken: requireAuthUser(userId, "admin overview"),
-    });
+// ── Alerts ─────────────────────────────────────────────────────────────────
+export const alerts = {
+  list(params = {}) {
+    return request(`/alerts${buildQueryString(params)}`);
   },
-
-  getConfig(userId) {
-    return request("/admin-gate/config", {
-      authToken: requireAuthUser(userId, "admin config read"),
-    });
+  get(alertId) {
+    return request(`/alerts/${encodeURIComponent(alertId)}`);
   },
-
-  patchConfig(userId, patch) {
-    return request("/admin-gate/config", {
+  label(alertId, status, note = "") {
+    return request(`/alerts/${encodeURIComponent(alertId)}`, {
       method: "PATCH",
-      authToken: requireAuthUser(userId, "admin config patch"),
-      body: patch,
+      body: { status, note },
     });
   },
+  exportTraining() {
+    return requestBlob("/alerts/training-export");
+  },
+};
 
-  setShadowMode(userId, enabled) {
+// ── Tenant administration ──────────────────────────────────────────────────
+export const apiKeys = {
+  list() {
+    return request("/auth/api-keys");
+  },
+  create(name, roles = ["integration"]) {
+    return request("/auth/api-keys", { method: "POST", body: { name, roles } });
+  },
+  revoke(keyId) {
+    return request(`/auth/api-keys/${encodeURIComponent(keyId)}`, { method: "DELETE" });
+  },
+};
+
+export const tenant = {
+  getSettings() {
+    return request("/tenant/settings");
+  },
+  patchSettings(patch) {
+    return request("/tenant/settings", { method: "PATCH", body: patch });
+  },
+};
+
+export const events = {
+  ingest(eventsList) {
+    return request("/events", { method: "POST", body: { events: eventsList } });
+  },
+};
+
+// ── Platform operations (platform_admin) ───────────────────────────────────
+// The first argument is kept for compatibility with AdminGate.jsx; requests
+// are authorised by the signed-in token.
+export const adminGate = {
+  overview() {
+    return request("/admin-gate");
+  },
+  getConfig() {
+    return request("/admin-gate/config");
+  },
+  patchConfig(_actor, patch) {
+    return request("/admin-gate/config", { method: "PATCH", body: patch });
+  },
+  setShadowMode(_actor, enabled) {
     return request("/admin-gate/shadow-mode", {
       method: "PATCH",
-      authToken: requireAuthUser(userId, "admin shadow mode patch"),
       body: { enabled: Boolean(enabled) },
     });
   },
-
-  listModels(userId) {
-    return request("/admin-gate/models", {
-      authToken: requireAuthUser(userId, "admin model list"),
-    });
+  listModels() {
+    return request("/admin-gate/models");
   },
-
-  setCanary(userId, version, trafficPercent = null) {
+  setCanary(_actor, version, trafficPercent = null) {
     return request("/admin-gate/models/canary", {
       method: "POST",
-      authToken: requireAuthUser(userId, "admin canary promote"),
-      body: {
-        version,
-        traffic_percent: trafficPercent,
-      },
+      body: { version, traffic_percent: trafficPercent },
     });
   },
-
-  promoteModel(userId, version, notes = "") {
+  promoteModel(_actor, version, notes = "") {
     return request("/admin-gate/models/promote", {
       method: "POST",
-      authToken: requireAuthUser(userId, "admin model promote"),
       body: { version, notes },
     });
   },
-
-  rollbackModel(userId, targetVersion = null, notes = "") {
+  rollbackModel(_actor, targetVersion = null, notes = "") {
     return request("/admin-gate/models/rollback", {
       method: "POST",
-      authToken: requireAuthUser(userId, "admin model rollback"),
-      body: {
-        target_version: targetVersion,
-        notes,
-      },
+      body: { target_version: targetVersion, notes },
     });
   },
-
-  listAudit(userId, params = {}) {
-    const qs = buildQueryString(params);
-    return request(`/admin-gate/audit${qs}`, {
-      authToken: requireAuthUser(userId, "admin audit query"),
-    });
+  listAudit(_actor, params = {}) {
+    return request(`/admin-gate/audit${buildQueryString(params)}`);
   },
-
-  exportAudit(userId, params = {}) {
-    const qs = buildQueryString(params);
-    return requestBlob(`/admin-gate/audit/export${qs}`, {
-      authToken: requireAuthUser(userId, "admin audit export"),
-    });
+  exportAudit(_actor, params = {}) {
+    return requestBlob(`/admin-gate/audit/export${buildQueryString(params)}`);
   },
 };
+
+export function downloadBlob({ blob, filename }, fallbackName) {
+  const url = URL.createObjectURL(blob);
+  const link = document.createElement("a");
+  link.href = url;
+  link.download = filename || fallbackName;
+  document.body.appendChild(link);
+  link.click();
+  document.body.removeChild(link);
+  URL.revokeObjectURL(url);
+}

@@ -436,10 +436,9 @@ class DeviceSignalBridge:
         # Find the most recent location entry
         prev_lat, prev_lon, prev_ts = history[-1]
 
-        elapsed_seconds = ts - prev_ts
-        if elapsed_seconds < GEO_VELOCITY_MIN_WINDOW:
-            # Locations too close in time — geo-velocity check unreliable
-            return (0.0, [])
+        # Short gaps are clamped (not skipped): IP geolocation is noisy over
+        # minutes, but a 16,000 km jump in 60 seconds must still be flagged.
+        elapsed_seconds = max(ts - prev_ts, GEO_VELOCITY_MIN_WINDOW)
 
         distance_km = self._haversine_km(prev_lat, prev_lon, lat, lon)
 

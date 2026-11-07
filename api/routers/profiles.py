@@ -6,11 +6,10 @@ import logging
 import time
 from typing import Annotated
 from fastapi import APIRouter, Depends, HTTPException, Request, status
+from api.auth import Principal, get_principal, require_permission
 from api.dependencies import (
-    get_current_user,
     get_population_prior,
     get_profile_store,
-    require_admin,
     rate_limit_check,
 )
 from api.schemas import (
@@ -45,25 +44,23 @@ router = APIRouter(
         "Users can only access their own profile. Admins can access any profile."
     ),
 )
-async def get_profile(
+def get_profile(
     user_id:         str,
     request:         Request,
-    current_user_id: Annotated[str, Depends(get_current_user)],
+    principal:       Annotated[Principal, Depends(get_principal)],
     _rate:           Annotated[None, Depends(rate_limit_check)] = None,
 ) -> ProfileResponse:
     """
     Return the statistical summary of a user's behavioural profile.
     """
-    # Access control: users can only read their own profile
-    if current_user_id != user_id:
-        roles = getattr(request.state, "roles", [])
-        if "admin" not in roles:
-            raise HTTPException(
-                status_code=status.HTTP_403_FORBIDDEN,
-                detail="You can only access your own profile.",
-            )
+    # Access control: own profile, or analyst/viewer/admin within the tenant
+    if principal.subject != user_id and not principal.can("profiles:read_any"):
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="You can only access your own profile.",
+        )
 
-    profile_store = get_profile_store(request)
+    profile_store = get_profile_store(request).for_tenant(principal.tenant_id)
     try:
         profile = profile_store.get(user_id)
     except Exception as e:
@@ -111,10 +108,10 @@ async def get_profile(
         "data from Redis. This is the technical implementation of GDPR Article 17 "
     ),
 )
-async def delete_profile(
+def delete_profile(
     user_id:         str,
     request:         Request,
-    current_user_id: Annotated[str, Depends(get_current_user)],
+    principal:       Annotated[Principal, Depends(get_principal)],
 ) -> ProfileDeleteResponse:
     """
     Delete a user's profile — GDPR right to erasure.
@@ -123,15 +120,15 @@ async def delete_profile(
       - Consent records (ConsentGatedLogger — if applicable)
     """
     
-    if current_user_id != user_id:
-        roles = getattr(request.state, "roles", [])
-        if "admin" not in roles:
-            raise HTTPException(
-                status_code=status.HTTP_403_FORBIDDEN,
-                detail="You can only delete your own profile.",
-            )
+    if principal.subject != user_id and not principal.can("profiles:delete_any"):
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="You can only delete your own profile.",
+        )
+    current_user_id = principal.subject
+    request.state.tenant_id = principal.tenant_id
 
-    profile_store = get_profile_store(request)
+    profile_store = get_profile_store(request).for_tenant(principal.tenant_id)
     deleted_at    = time.time()
     before_profile = None
     try:
@@ -164,7 +161,7 @@ async def delete_profile(
     device_bridge = getattr(request.app.state, "device_bridge", None)
     if device_bridge:
         try:
-            device_bridge.clear_user_history(user_id)
+            device_bridge.clear_user_history(f"{principal.tenant_id}/{user_id}")
         except Exception as e:
             logger.warning(
                 "Device history clear failed: user=%s error=%s", user_id, e
@@ -220,15 +217,17 @@ async def delete_profile(
         "This is a security-sensitive operation — admin role required. "
     ),
 )
-async def reset_profile(
+def reset_profile(
     user_id:    str,
     request:    Request,
-    admin_user: Annotated[str, Depends(require_admin)],
+    principal:  Annotated[Principal, Depends(require_permission("profiles:reset"))],
 ) -> ProfileResetResponse:
     """
     Reset a user's profile to the population prior (admin operation).
     """
-    profile_store    = get_profile_store(request)
+    admin_user       = principal.subject
+    request.state.tenant_id = principal.tenant_id
+    profile_store    = get_profile_store(request).for_tenant(principal.tenant_id)
     population_prior = get_population_prior(request)
     before_profile = None
 

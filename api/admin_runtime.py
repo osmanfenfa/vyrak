@@ -52,7 +52,6 @@ def _apply_runtime_config_to_modules(app: FastAPI, cfg: Dict[str, Any]) -> None:
     import core.profile as profile_mod
     import coldstart.ramp_manager as ramp_mod
     import api.routers.sessions as sessions_mod
-    import api.dependencies as deps_mod
 
     module_updates = {
         "TRUST_INITIAL": cfg["trust_initial"],
@@ -97,19 +96,5 @@ def _apply_runtime_config_to_modules(app: FastAPI, cfg: Dict[str, Any]) -> None:
         cfg.get("shadow_mode", getattr(app.state, "shadow_mode", False))
     )
 
-    # Update active sessions immediately.
-    for engine, _ in list(getattr(deps_mod, "_session_cache", {}).values()):
-        try:
-            engine.shadow_mode = bool(app.state.shadow_mode)
-            engine.trust_score = min(
-                100.0,
-                max(0.0, float(cfg.get("trust_initial", engine.trust_score))),
-            ) if not engine.result_history else engine.trust_score
-            if hasattr(engine, "_ramp"):
-                ramp_actions = max(1, int(cfg["cold_start_ramp_actions"]))
-                engine._ramp.ramp_actions = ramp_actions
-                engine._ramp._interp_start = int(
-                    ramp_actions * (1 - engine._ramp.interpolation_fraction)
-                )
-        except Exception as e:
-            logger.warning("Failed to apply runtime config to active engine: %s", e)
+    # Sessions are rebuilt from shared state on every request, so they pick
+    # up the patched module-level thresholds on their next action.

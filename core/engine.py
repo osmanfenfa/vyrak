@@ -1,5 +1,11 @@
 """
-HoeffdingTreeClassifier — incremental online learning for Zelvryn.
+Zelvryn evaluation engine.
+
+- ABSAv2Engine: per-session evaluator combining rule signals, label-free
+  detectors (sequence, volume, peer group) and an optional ML classifier
+  into a trust score and an ALLOW / CHALLENGE / BLOCK decision.
+- HoeffdingTreeClassifier: incremental online classifier (river, with a
+  Gaussian Naive Bayes fallback).
 """
 
 import logging
@@ -14,6 +20,30 @@ from typing import Any, Dict, List, Optional, Tuple
 from coldstart.ramp_manager import RampUpManager
 from core.action import UserAction
 from core.constants import (
+    ANOMALY_MACHINE_TIMING,
+    ANOMALY_NEW_IDENTITY_SENSITIVE_BURST,
+    MACHINE_TIMING_MAX_CV,
+    MACHINE_TIMING_MIN_INTERVALS,
+    NEW_IDENTITY_BURST_SHARE,
+    NEW_IDENTITY_SENSITIVE_SHARE,
+    ANOMALY_NEW_PRIVILEGED_ACTION,
+    ANOMALY_PEER_DEVIATION,
+    ANOMALY_UNUSUAL_SEQUENCE,
+    ANOMALY_VOLUME_SPIKE,
+    IDENTITY_KIND_HUMAN,
+    PEER_MIN_IDENTITIES,
+    PEER_MIN_WINDOWS,
+    PEER_Z_LIMIT,
+    SEQ_MIN_TRANSITIONS,
+    SEQ_SURPRISE_MARGIN_BITS,
+    VOLUME_FLOOR_DELETE,
+    VOLUME_FLOOR_MULTIPLIER_AGENT,
+    VOLUME_FLOOR_MULTIPLIER_SERVICE,
+    VOLUME_FLOOR_EXPORT,
+    VOLUME_FLOOR_READ,
+    VOLUME_K_SIGMA,
+    VOLUME_MIN_BUCKETS,
+    VOLUME_RATIO,
     ANOMALY_DUAL_SIGNAL_ESCALATION,
     ANOMALY_HIGH_ENTROPY,
     ANOMALY_LOW_SIMILARITY,
@@ -41,6 +71,7 @@ from core.constants import (
 )
 from core.features import FeatureExtractor
 from core.math_utils import (
+    action_space_entropy,
     build_live_vector,
     compute_risk_label,
     cosine_similarity,
@@ -48,6 +79,7 @@ from core.math_utils import (
     temporal_zscore,
 )
 from core.profile import BehavioralProfile
+from detectors.peer import PeerGroupBaseline
 
 logger = logging.getLogger(__name__)
 
@@ -390,6 +422,19 @@ class HoeffdingTreeClassifier:
         )
 
 
+
+# First-ever use of these by an established identity is worth an alert.
+# (Exports/deletes are covered by the volume detector instead.)
+_PRIVILEGED_TYPES = frozenset({"admin", "config"})
+
+# Single low-severity signals that may still be learned from when the session
+# stays in good standing; otherwise a legitimate rare action would be flagged
+# forever (it could never enter the baseline). Severe signals never are.
+_LEARNABLE_ANOMALIES = frozenset({
+    "NEW_PRIVILEGED_ACTION", "TEMPORAL_DRIFT", "UNUSUAL_SEQUENCE", "HIGH_ENTROPY",
+})
+
+
 @dataclass
 class DecisionResult:
     """
@@ -406,6 +451,12 @@ class DecisionResult:
     ramp_active: bool = False
     action_type: str = "read"
     timestamp: float = 0.0
+    reasons: List[str] = field(default_factory=list)
+    signals: Dict[str, Any] = field(default_factory=dict)
+    learned: bool = False
+    # 20-dim feature vector of the window (kept off the wire and out of
+    # stored history; attached to alerts so labels become training data)
+    features: List[float] = field(default_factory=list, repr=False)
 
     def is_flagged(self) -> bool:
         return bool(self.anomalies)
@@ -422,13 +473,56 @@ class DecisionResult:
             "ramp_active": self.ramp_active,
             "action_type": self.action_type,
             "timestamp": self.timestamp,
+            "reasons": list(self.reasons),
+            "signals": dict(self.signals),
+            "learned": self.learned,
         }
+
+    @classmethod
+    def from_dict(cls, d: Dict[str, Any]) -> "DecisionResult":
+        return cls(
+            decision=d["decision"],
+            trust_score=float(d["trust_score"]),
+            bot_prob=float(d.get("bot_prob", 0.0)),
+            similarity=float(d.get("similarity", 1.0)),
+            entropy=float(d.get("entropy", 0.0)),
+            temporal_z=float(d.get("temporal_z", 0.0)),
+            anomalies=list(d.get("anomalies") or []),
+            ramp_active=bool(d.get("ramp_active", False)),
+            action_type=d.get("action_type", "read"),
+            timestamp=float(d.get("timestamp", 0.0)),
+            reasons=list(d.get("reasons") or []),
+            signals=dict(d.get("signals") or {}),
+            learned=bool(d.get("learned", False)),
+        )
 
 
 class ABSAv2Engine:
     """
-    Minimal, production-safe ABSA evaluation engine used by the API layer.
+    Per-session evaluation engine.
+
+    Signals
+    -------
+    Rule signals (per identity):   cosine similarity of action mix, entropy,
+                                   timing z-score.
+    Label-free detectors:          action-sequence surprise (Markov chain),
+                                   data-volume rate, first-ever privileged
+                                   action, peer-group deviation.
+    Supervised (optional):         automation classifier P(bot), for human
+                                   identities only. Agents and services are
+                                   automated by design, so "is it a bot?" is
+                                   the wrong question for them; they are
+                                   judged against their own baseline instead.
+
+    Learning is gated: an action updates the identity's baseline only if it
+    raised no anomaly AND the session is in good standing (trust above the
+    challenge threshold). This limits slow profile poisoning.
     """
+
+    RESULT_HISTORY_CAP = 500
+    MIN_COSINE_WINDOW = 5
+    HUMAN_MIN_TIMING_CV = 0.15
+    ANOMALY_LOG_CAP = 200
 
     def __init__(
         self,
@@ -436,11 +530,18 @@ class ABSAv2Engine:
         classifier: Optional[Any] = None,
         session_id: str = "",
         shadow_mode: bool = False,
+        identity_kind: Optional[str] = None,
+        peer_baseline: Optional[PeerGroupBaseline] = None,
+        peer_group: Optional[str] = None,
     ) -> None:
         self.profile = profile
         self.classifier = classifier
         self.session_id = session_id or ""
         self.shadow_mode = shadow_mode
+        self.identity_kind = identity_kind or getattr(profile, "identity_kind", IDENTITY_KIND_HUMAN)
+        self.peer_baseline = peer_baseline
+        self.peer_group = peer_group or self.identity_kind
+        self.peer_dirty = False
 
         self.trust_score: float = TRUST_INITIAL
         self.action_window: deque = deque(maxlen=BEHAVIOR_WINDOW_SIZE)
@@ -451,7 +552,18 @@ class ABSAv2Engine:
         self._last_action_ts: Optional[float] = None
         self._started_at: float = time.time()
         self._ramp = RampUpManager()
+        self._actions_since_peer_update: int = 0
+        self._decision_counts: Dict[str, int] = {
+            DECISION_ALLOW: 0, DECISION_CHALLENGE: 0, DECISION_BLOCK: 0,
+        }
 
+    @property
+    def is_human(self) -> bool:
+        return self.identity_kind == IDENTITY_KIND_HUMAN
+
+    # ─────────────────────────────────────────────────────────────────────
+    # MAIN ENTRY POINT
+    # ─────────────────────────────────────────────────────────────────────
     def evaluate_action(self, action: UserAction) -> DecisionResult:
         """
         Evaluate one action and update trust + profile state.
@@ -461,29 +573,135 @@ class ABSAv2Engine:
         ramp_active = self._ramp.is_warming_up(action_count)
         cosine_enabled = self._ramp.cosine_check_enabled(action_count)
 
+        # A 1-4 action window is too small for a stable action-mix comparison
+        cosine_enabled = cosine_enabled and len(self.action_window) >= self.MIN_COSINE_WINDOW
         similarity = self._compute_similarity(cosine_enabled)
-        entropy = shannon_entropy([a.action_type for a in self.action_window])
+        entropy = action_space_entropy(
+            [a.action_type for a in self.action_window], UserAction.type_count()
+        )
         temporal_z = self._compute_temporal_z(action, action_count)
-        bot_prob = self._compute_bot_prob()
+        features = self._extract_features()
+        bot_prob = self._compute_bot_prob(features) if self.is_human else 0.0
 
         ml_thresh = self._ramp.get_ml_threshold(action_count)
         temporal_limit = self._ramp.get_temporal_limit(action_count)
         sim_thresh = self.profile.adaptive_threshold
 
         anomalies: List[str] = []
+        reasons: List[str] = []
+        signals: Dict[str, Any] = {"identity_kind": self.identity_kind}
+
+        # ── rule signals ─────────────────────────────────────────────────
         if cosine_enabled and similarity < sim_thresh:
             anomalies.append(ANOMALY_LOW_SIMILARITY)
-        if len(self.action_window) >= ENTROPY_MIN_WINDOW:
-            if entropy > ENTROPY_HIGH_THRESHOLD:
-                anomalies.append(ANOMALY_HIGH_ENTROPY)
+            reasons.append(
+                f"Action mix similarity {similarity:.2f} is below this identity's "
+                f"threshold {sim_thresh:.2f}."
+            )
+        if len(self.action_window) >= ENTROPY_MIN_WINDOW and entropy > ENTROPY_HIGH_THRESHOLD:
+            anomalies.append(ANOMALY_HIGH_ENTROPY)
+            reasons.append(f"Actions are unusually random (entropy {entropy:.2f}).")
         if temporal_z > temporal_limit:
             anomalies.append(ANOMALY_TEMPORAL_DRIFT)
-        if bot_prob >= ml_thresh:
+            reasons.append(
+                f"Acting much faster than this identity's rhythm: the gap since the "
+                f"previous action is {temporal_z:.1f} standard deviations shorter than usual."
+            )
+        if self.is_human and bot_prob >= ml_thresh:
             anomalies.append(ANOMALY_ML_BOT_DETECTED)
+            reasons.append(f"Automation classifier estimates P(bot) = {bot_prob:.2f}.")
+
+        # Undeclared automation: a "human" whose timing never varies
+        if self.is_human:
+            cv = self._window_interval_cv()
+            if cv is not None and cv < MACHINE_TIMING_MAX_CV:
+                anomalies.append(ANOMALY_MACHINE_TIMING)
+                reasons.append(
+                    f"Timing is machine-regular for an identity declared as human "
+                    f"(variation {cv:.3f} over {len(self.action_window) - 1} gaps; "
+                    f"people are rarely below {MACHINE_TIMING_MAX_CV})."
+                )
+
+        # Cold start: a brand-new identity that goes straight for sensitive data
+        if (
+            ramp_active
+            and len(self.action_window) >= ENTROPY_MIN_WINDOW
+            and features[14] >= NEW_IDENTITY_SENSITIVE_SHARE
+            and features[17] >= NEW_IDENTITY_BURST_SHARE
+        ):
+            anomalies.append(ANOMALY_NEW_IDENTITY_SENSITIVE_BURST)
+            reasons.append(
+                f"New identity with no history: {features[14]:.0%} of recent actions "
+                f"are delete/export/config/admin and {features[17]:.0%} came less "
+                f"than half a second apart."
+            )
+
+        # ── label-free detectors ─────────────────────────────────────────
+        seq = self.profile.sequence_model.assess(
+            [a.action_type for a in self.action_window],
+            min_transitions=SEQ_MIN_TRANSITIONS,
+            margin_bits=SEQ_SURPRISE_MARGIN_BITS,
+        )
+        signals["sequence_excess_bits"] = round(seq.excess_bits, 3) if seq.active else None
+        if seq.anomalous:
+            anomalies.append(ANOMALY_UNUSUAL_SEQUENCE)
+            reasons.extend(seq.reasons)
+
+        vol = self.profile.volume.observe(
+            action.action_type,
+            action.metadata,
+            action.timestamp,
+            min_buckets=VOLUME_MIN_BUCKETS,
+            k_sigma=VOLUME_K_SIGMA,
+            ratio=VOLUME_RATIO,
+            floors=self._volume_floors(),
+        )
+        if vol.metric:
+            signals["volume"] = {
+                "metric": vol.metric,
+                "window_total": round(vol.live_total, 1),
+                "limit": round(vol.limit, 1),
+                "baseline_mature": vol.mature,
+            }
+        self._volume_overshoot = 0.0
+        if vol.anomalous:
+            anomalies.append(ANOMALY_VOLUME_SPIKE)
+            reasons.extend(vol.reasons)
+            self._volume_overshoot = vol.live_total / max(vol.limit, 1.0)
+
+        if (
+            action.action_type in _PRIVILEGED_TYPES
+            and self.profile.is_mature(min_actions=self._ramp.ramp_actions)
+            and self.profile.action_counts.get(action.action_type, 0) == 0
+        ):
+            anomalies.append(ANOMALY_NEW_PRIVILEGED_ACTION)
+            reasons.append(
+                f"First '{action.action_type}' action ever by this identity after "
+                f"{self.profile.vector_count} normal actions."
+            )
+
+        if self.peer_baseline is not None and len(self.action_window) >= ENTROPY_MIN_WINDOW:
+            # Stricter for established identities, which have their own baseline
+            z_limit = PEER_Z_LIMIT if ramp_active else PEER_Z_LIMIT * 1.5
+            peer = self.peer_baseline.assess(
+                features,
+                min_windows=PEER_MIN_WINDOWS,
+                min_identities=PEER_MIN_IDENTITIES,
+                z_limit=z_limit,
+                group_name=self.peer_group,
+            )
+            signals["peer_score"] = round(peer.score, 3) if peer.active else None
+            if peer.anomalous:
+                anomalies.append(ANOMALY_PEER_DEVIATION)
+                reasons.extend(peer.reasons)
+
         if len(anomalies) >= 2:
             anomalies.append(ANOMALY_DUAL_SIGNAL_ESCALATION)
 
-        self._apply_trust_update(action, anomalies, similarity, bot_prob, ml_thresh)
+        learned = self._apply_trust_update(action, anomalies, similarity, bot_prob, ml_thresh)
+        if learned:
+            self._learn_from_clean_action(action, features)
+
         decision = self._compute_decision()
         if self.shadow_mode:
             decision = DECISION_ALLOW
@@ -499,35 +717,27 @@ class ABSAv2Engine:
             ramp_active=ramp_active,
             action_type=action.action_type,
             timestamp=action.timestamp,
+            reasons=reasons,
+            signals=signals,
+            learned=learned,
+            features=[round(float(v), 6) for v in features],
         )
-        self.result_history.append(result)
-        self.decision_log.append(result.decision)
-        if anomalies:
-            self.anomaly_log.append(
-                {
-                    "action_type": action.action_type,
-                    "timestamp": action.timestamp,
-                    "trust_score": result.trust_score,
-                    "anomalies": anomalies,
-                    "bot_prob": result.bot_prob,
-                    "decision": result.decision,
-                }
-            )
-
+        self._record_result(result)
         self._last_action_ts = action.timestamp
         return result
 
+    # ─────────────────────────────────────────────────────────────────────
+    # PUBLIC HELPERS
+    # ─────────────────────────────────────────────────────────────────────
     def restore_trust(self, increment: float = 20.0) -> None:
         self.trust_score = min(100.0, self.trust_score + max(0.0, increment))
 
-    def get_session_summary(self) -> Dict[str, Any]:
-        total = len(self.result_history)
-        allowed = self.decision_log.count(DECISION_ALLOW)
-        challenged = self.decision_log.count(DECISION_CHALLENGE)
-        blocked = self.decision_log.count(DECISION_BLOCK)
+    def current_decision(self) -> str:
+        return self._compute_decision()
 
+    def get_session_summary(self) -> Dict[str, Any]:
         top_features: List[Tuple[str, float]] = []
-        if self.classifier and hasattr(self.classifier, "get_top_features"):
+        if self.is_human and self.classifier and hasattr(self.classifier, "get_top_features"):
             try:
                 top_features = list(self.classifier.get_top_features(5))
             except Exception:
@@ -537,10 +747,10 @@ class ABSAv2Engine:
         ml_samples = int(getattr(self.classifier, "n_samples", 0) or 0)
 
         return {
-            "total_actions": total,
-            "allowed": allowed,
-            "challenged": challenged,
-            "blocked": blocked,
+            "total_actions": sum(self._decision_counts.values()),
+            "allowed": self._decision_counts[DECISION_ALLOW],
+            "challenged": self._decision_counts[DECISION_CHALLENGE],
+            "blocked": self._decision_counts[DECISION_BLOCK],
             "anomaly_count": len(self.anomaly_log),
             "final_trust": round(self.trust_score, 2),
             "risk_rating": compute_risk_label(self.trust_score),
@@ -549,8 +759,82 @@ class ABSAv2Engine:
             "top_features": top_features,
             "session_duration_s": max(0.0, time.time() - self._started_at),
             "shadow_mode": bool(self.shadow_mode),
+            "identity_kind": self.identity_kind,
             "anomaly_log": list(self.anomaly_log),
         }
+
+    # ─────────────────────────────────────────────────────────────────────
+    # STATE (for storing sessions outside the process, e.g. Redis)
+    # ─────────────────────────────────────────────────────────────────────
+    def export_state(self) -> Dict[str, Any]:
+        return {
+            "session_id": self.session_id,
+            "shadow_mode": self.shadow_mode,
+            "identity_kind": self.identity_kind,
+            "peer_group": self.peer_group,
+            "trust_score": self.trust_score,
+            "action_window": [a.to_dict() for a in self.action_window],
+            "result_history": [r.to_dict() for r in self.result_history[-self.RESULT_HISTORY_CAP:]],
+            "decision_counts": dict(self._decision_counts),
+            "anomaly_log": self.anomaly_log[-self.ANOMALY_LOG_CAP:],
+            "last_action_ts": self._last_action_ts,
+            "started_at": self._started_at,
+            "actions_since_peer_update": self._actions_since_peer_update,
+            "ramp_actions": self._ramp.ramp_actions,
+        }
+
+    def restore_state(self, state: Dict[str, Any]) -> None:
+        self.shadow_mode = bool(state.get("shadow_mode", self.shadow_mode))
+        self.identity_kind = state.get("identity_kind", self.identity_kind)
+        self.peer_group = state.get("peer_group", self.peer_group)
+        self.trust_score = float(state.get("trust_score", TRUST_INITIAL))
+        self.action_window.clear()
+        for a in state.get("action_window") or []:
+            self.action_window.append(UserAction.from_dict(a))
+        self.result_history = [DecisionResult.from_dict(r) for r in state.get("result_history") or []]
+        self.decision_log = [r.decision for r in self.result_history]
+        counts = state.get("decision_counts") or {}
+        for k in self._decision_counts:
+            self._decision_counts[k] = int(counts.get(k, 0))
+        self.anomaly_log = list(state.get("anomaly_log") or [])
+        self._last_action_ts = state.get("last_action_ts")
+        self._started_at = float(state.get("started_at", self._started_at))
+        self._actions_since_peer_update = int(state.get("actions_since_peer_update", 0))
+        ramp_actions = state.get("ramp_actions")
+        if ramp_actions:
+            self.set_ramp_actions(int(ramp_actions))
+
+    def set_ramp_actions(self, ramp_actions: int) -> None:
+        self._ramp.ramp_actions = max(1, int(ramp_actions))
+        self._ramp._interp_start = int(
+            self._ramp.ramp_actions * (1 - self._ramp.interpolation_fraction)
+        )
+
+    # ─────────────────────────────────────────────────────────────────────
+    # INTERNALS
+    # ─────────────────────────────────────────────────────────────────────
+    def _record_result(self, result: DecisionResult) -> None:
+        self.result_history.append(result)
+        if len(self.result_history) > self.RESULT_HISTORY_CAP:
+            self.result_history = self.result_history[-self.RESULT_HISTORY_CAP:]
+        self.decision_log.append(result.decision)
+        if len(self.decision_log) > self.RESULT_HISTORY_CAP:
+            self.decision_log = self.decision_log[-self.RESULT_HISTORY_CAP:]
+        self._decision_counts[result.decision] = self._decision_counts.get(result.decision, 0) + 1
+        if result.anomalies:
+            self.anomaly_log.append(
+                {
+                    "action_type": result.action_type,
+                    "timestamp": result.timestamp,
+                    "trust_score": result.trust_score,
+                    "anomalies": list(result.anomalies),
+                    "bot_prob": result.bot_prob,
+                    "decision": result.decision,
+                    "reasons": list(result.reasons),
+                }
+            )
+            if len(self.anomaly_log) > self.ANOMALY_LOG_CAP:
+                self.anomaly_log = self.anomaly_log[-self.ANOMALY_LOG_CAP:]
 
     def _compute_decision(self) -> str:
         if self.trust_score <= TRUST_BLOCK_THRESHOLD:
@@ -574,20 +858,54 @@ class ABSAv2Engine:
             return 0.0
         interval = max(0.0, action.timestamp - self._last_action_ts)
         mean_iv, std_iv = self.profile.get_timing_stats()
-        base_limit = self._ramp.get_temporal_limit(action_count)
-        z = temporal_zscore(interval, mean_iv, std_iv)
-        return z if base_limit >= TEMPORAL_ZSCORE_LIMIT else max(0.0, z)
+        # One-sided: pauses (coffee, meetings) are benign; acting much FASTER
+        # than this identity's rhythm is the hijack / automation signal.
+        if interval >= mean_iv:
+            return 0.0
+        # A tiny learned spread turns ordinary jitter into "drift": floor the
+        # spread relative to the mean (people vary more than agents do).
+        rel_floor = self.HUMAN_MIN_TIMING_CV if self.is_human else 0.25
+        std_iv = max(std_iv, rel_floor * mean_iv)
+        return temporal_zscore(interval, mean_iv, std_iv)
 
-    def _compute_bot_prob(self) -> float:
+    def _volume_floors(self) -> Dict[str, float]:
+        mult = 1.0
+        if self.identity_kind == "service":
+            mult = VOLUME_FLOOR_MULTIPLIER_SERVICE
+        elif self.identity_kind == "agent":
+            mult = VOLUME_FLOOR_MULTIPLIER_AGENT
+        return {
+            "read_units": VOLUME_FLOOR_READ * mult,
+            "export_units": VOLUME_FLOOR_EXPORT * mult,
+            "delete_units": VOLUME_FLOOR_DELETE * mult,
+        }
+
+    def _window_interval_cv(self) -> Optional[float]:
+        acts = list(self.action_window)
+        if len(acts) - 1 < MACHINE_TIMING_MIN_INTERVALS:
+            return None
+        gaps = [max(0.0, b.timestamp - a.timestamp) for a, b in zip(acts[:-1], acts[1:])]
+        mean = sum(gaps) / len(gaps)
+        if mean <= 0:
+            return 0.0
+        var = sum((g - mean) ** 2 for g in gaps) / (len(gaps) - 1)
+        return math.sqrt(var) / mean
+
+    def _extract_features(self) -> List[float]:
+        try:
+            return FeatureExtractor.extract(
+                list(self.action_window),
+                profile_intervals=self.profile.get_recent_intervals(20),
+            )
+        except Exception:
+            return [0.0] * ML_FEATURE_DIM
+
+    def _compute_bot_prob(self, features: List[float]) -> float:
         if not self.classifier:
             return 0.0
         if not getattr(self.classifier, "is_trained", False):
             return 0.0
         try:
-            features = FeatureExtractor.extract(
-                list(self.action_window),
-                profile_intervals=self.profile.get_recent_intervals(20),
-            )
             return float(self.classifier.predict_proba(features))
         except Exception:
             return 0.0
@@ -599,7 +917,8 @@ class ABSAv2Engine:
         similarity: float,
         bot_prob: float,
         ml_thresh: float,
-    ) -> None:
+    ) -> bool:
+        """Update trust. Returns True when the action may be learned from."""
         if anomalies:
             decay = TRUST_DECAY_MILD
             if ANOMALY_LOW_SIMILARITY in anomalies:
@@ -607,15 +926,48 @@ class ABSAv2Engine:
                     decay = max(decay, TRUST_DECAY_SEVERE)
                 else:
                     decay = max(decay, TRUST_DECAY_MODERATE)
-            if ANOMALY_ML_BOT_DETECTED in anomalies or bot_prob >= ml_thresh:
+            if ANOMALY_ML_BOT_DETECTED in anomalies:
                 decay = max(decay, TRUST_DECAY_AI_BOT)
+            if ANOMALY_NEW_IDENTITY_SENSITIVE_BURST in anomalies:
+                decay = max(decay, TRUST_DECAY_SEVERE)
+            if ANOMALY_VOLUME_SPIKE in anomalies:
+                decay = max(decay, TRUST_DECAY_SEVERE)
+                # Magnitude-aware: 3x or more over the limit challenges at once
+                if getattr(self, "_volume_overshoot", 0.0) >= 3.0:
+                    decay = max(decay, TRUST_DECAY_SEVERE + TRUST_DECAY_MODERATE)
+            if ANOMALY_UNUSUAL_SEQUENCE in anomalies or ANOMALY_PEER_DEVIATION in anomalies:
+                decay = max(decay, TRUST_DECAY_MODERATE)
+            # NEW_PRIVILEGED_ACTION alone stays mild: worth an alert, not a block
             if len(anomalies) >= 2:
                 decay = max(decay, TRUST_DECAY_MODERATE)
-            if action.is_sensitive():
+            if action.is_sensitive() and not (
+                len(anomalies) == 1 and anomalies[0] == ANOMALY_NEW_PRIVILEGED_ACTION
+            ):
                 decay = max(decay, TRUST_DECAY_MODERATE)
             self.trust_score = max(0.0, self.trust_score - decay)
-            return
+            return (
+                len(anomalies) == 1
+                and anomalies[0] in _LEARNABLE_ANOMALIES
+                and self.trust_score > TRUST_CHALLENGE_THRESHOLD
+            )
 
         recovery = self._ramp.get_trust_recovery_rate(self.profile.vector_count)
         self.trust_score = min(100.0, self.trust_score + max(recovery, TRUST_RECOVERY_RATE))
+        # Anti-poisoning: only learn while the session is in good standing
+        return self.trust_score > TRUST_CHALLENGE_THRESHOLD
+
+    def _learn_from_clean_action(self, action: UserAction, features: List[float]) -> None:
         self.profile.record_action(action)
+        self.profile.volume.commit_clean(action.action_type, action.metadata)
+
+        if self.peer_baseline is None:
+            return
+        self._actions_since_peer_update += 1
+        # Non-overlapping full windows keep peer samples roughly independent
+        if (
+            len(self.action_window) >= BEHAVIOR_WINDOW_SIZE
+            and self._actions_since_peer_update >= BEHAVIOR_WINDOW_SIZE
+        ):
+            self.peer_baseline.update(features, self.profile.user_id)
+            self._actions_since_peer_update = 0
+            self.peer_dirty = True

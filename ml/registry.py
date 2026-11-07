@@ -3,6 +3,7 @@ ModelRegistry — tracks all trained model versions, manages the active/canary
 state machine, and provides atomic promotion and instant rollback.
 """
 
+import hashlib
 import json
 import logging
 import os
@@ -19,6 +20,14 @@ from core.constants import CANARY_TRAFFIC_PERCENT
 logger = logging.getLogger(__name__)
 
 REGISTRY_FILENAME = "model_registry.json"
+
+
+def file_sha256(path: str) -> str:
+    h = hashlib.sha256()
+    with open(path, "rb") as f:
+        for chunk in iter(lambda: f.read(1 << 20), b""):
+            h.update(chunk)
+    return h.hexdigest()
 
 
 class ModelState(str, Enum):
@@ -47,6 +56,7 @@ class ModelVersion:
     promoted_at: Optional[float] = None
     retired_at:  Optional[float] = None
     notes:       str            = ""
+    sha256:      Optional[str]  = None
 
     def is_deployable(self) -> bool:
         """Return True if the model is in a state that can be promoted."""
@@ -67,6 +77,7 @@ class ModelVersion:
             "promoted_at": self.promoted_at,
             "retired_at":  self.retired_at,
             "notes":       self.notes,
+            "sha256":      self.sha256,
         }
 
     @classmethod
@@ -85,6 +96,7 @@ class ModelVersion:
             promoted_at = d.get("promoted_at"),
             retired_at  = d.get("retired_at"),
             notes       = d.get("notes", ""),
+            sha256      = d.get("sha256"),
         )
 
     def __repr__(self) -> str:
@@ -156,6 +168,7 @@ class ModelRegistry:
             cv_far     = cv_far,
             cv_frr     = cv_frr,
             notes      = notes,
+            sha256     = file_sha256(model_path) if os.path.exists(model_path) else None,
         )
         self._versions[version] = mv
         self._save_registry()
@@ -310,7 +323,8 @@ class ModelRegistry:
         if self._canary_ver and self.canary_traffic_percent > 0:
             if session_id:
                 # Deterministic: hash session_id to decide routing
-                h = hash(session_id) % 100
+                # Stable across processes (built-in hash() is randomised per process)
+                h = int(hashlib.sha256(session_id.encode("utf-8")).hexdigest()[:8], 16) % 100
                 use_canary = h < self.canary_traffic_percent
             else:
                 use_canary = random.random() < (self.canary_traffic_percent / 100.0)
@@ -454,6 +468,26 @@ class ModelRegistry:
                 mv.model_path, version
             )
             return None
+
+        # Model files are pickled: loading one runs code. Only load a file whose
+        # checksum matches the one recorded when it was registered.
+        actual = file_sha256(mv.model_path)
+        if mv.sha256:
+            if actual != mv.sha256:
+                logger.error(
+                    "Refusing to load model %s: checksum mismatch (expected %s, got %s).",
+                    version, mv.sha256[:12], actual[:12],
+                )
+                return None
+        elif os.environ.get("ZELVRYN_ENV", "development").lower() == "production":
+            logger.error(
+                "Refusing to load model %s in production: no checksum recorded. "
+                "Re-register it (scripts/train_initial_model.py) to record one.",
+                version,
+            )
+            return None
+        else:
+            logger.warning("Model %s has no recorded checksum; loading (development only).", version)
 
         try:
             clf = RandomForestClassifier.load_model(mv.model_path)

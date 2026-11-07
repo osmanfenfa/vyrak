@@ -47,7 +47,9 @@ services:
       context: .
       dockerfile: Dockerfile
     restart: unless-stopped
-    env_file: .env
+    env_file:
+      - path: .env
+        required: false
     environment:
       DATABASE_URL:  postgresql+asyncpg://zelvryn:zelvryn@postgres:5432/zelvryn
       REDIS_URL:     redis://redis:6379/0

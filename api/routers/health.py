@@ -54,7 +54,7 @@ async def health_check(request: Request) -> HealthResponse:
     # Model registry degraded is not a critical failure — engine can run rule-based detection without a classifier
 
     # Check Session Engine
-    active_sessions = get_active_session_count()
+    active_sessions = get_active_session_count(request)
     components["session_engine"] = ComponentStatus(
         status  = "healthy",
         details = f"{active_sessions} active sessions",

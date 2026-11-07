@@ -122,12 +122,17 @@ class TestDriftInEngine:
         assert drift_engine.trust_score >= 60.0
 
     def test_normal_actions_after_drift_recover_trust(self, drift_engine):
-        """Clean actions gradually restore trust after a drift period."""
+        """Actions matching the identity's *new* role restore trust after drift.
+
+        The profile's recent behaviour is admin/config (EWMA follows drift), so
+        actions consistent with that new normal are clean and trust recovers.
+        """
         drift_engine.trust_score = 55.0
         t = time.time() + 1000
-        for _ in range(10):
-            drift_engine.evaluate_action(UserAction("read","doc",timestamp=t))
-            t += 4.0
+        for i in range(10):
+            at = "admin" if i % 2 == 0 else "config"
+            drift_engine.evaluate_action(UserAction(at, f"sys_{i}", timestamp=t))
+            t += 3.5 + (i % 3) * 0.4
         assert drift_engine.trust_score >= 55.0
 
 

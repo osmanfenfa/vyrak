@@ -1,0 +1,38 @@
+# ── Secrets & local config ────────────────────────────────────────────────
+.env
+.env.*
+!.env.example
+dashboard/.env
+dashboard/.env.*
+!dashboard/.env.example
+
+# ── Python ────────────────────────────────────────────────────────────────
+__pycache__/
+*.py[cod]
+*.egg-info/
+.venv/
+venv/
+.pytest_cache/
+.coverage
+htmlcov/
+dist/
+build/
+
+# ── Runtime output ────────────────────────────────────────────────────────
+logs/*
+!logs/.gitkeep
+data/shadow_exports/*
+!data/shadow_exports/.gitkeep
+data/raw/**/*.csv
+reports/
+
+# ── Node / dashboard ──────────────────────────────────────────────────────
+node_modules/
+dashboard/dist/
+
+# ── OS / editor ───────────────────────────────────────────────────────────
+desktop.ini
+Thumbs.db
+.DS_Store
+.idea/
+.vscode/

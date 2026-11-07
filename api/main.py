@@ -12,6 +12,20 @@ from api.middleware import register_middleware
 from api.routers import include_routers
 from api.schemas import ErrorResponse, ValidationErrorResponse
 from api.admin_runtime import apply_runtime_patch, get_runtime_config
+from api.accounts import (
+    AccountStore,
+    OneTimeLinkStore,
+    TenantStore,
+    bootstrap_platform_admin,
+)
+from api.auth import ApiKeyStore, is_production, validate_security_config
+from api.stores import (
+    AlertStore,
+    PeerStore,
+    RateLimiter,
+    SessionStateStore,
+    TenantSettingsStore,
+)
 from core.constants import SHADOW_MODE_ENABLED, LOG_LEVEL
 logger = logging.getLogger(__name__)
 
@@ -55,6 +69,33 @@ def _load_local_env_file(path: str = ".env") -> None:
 
     if loaded:
         logger.info("Loaded %d variable(s) from %s.", loaded, path)
+
+
+# SHARED STATE
+def configure_state(app: FastAPI, redis_client=None) -> None:
+    """
+    Attach every Redis-backed store to app.state.
+
+    With no client (development / tests) an isolated in-memory backend is
+    used. Production must pass a real Redis client — see lifespan().
+    """
+    from profiles.memory_redis import MemoryRedis
+    from profiles.redis_store import RedisProfileStore
+
+    client = redis_client if redis_client is not None else MemoryRedis()
+    app.state.redis = client
+    app.state.profile_store = RedisProfileStore(redis_client=client)
+    app.state.session_store = SessionStateStore(client)
+    app.state.alert_store = AlertStore(client)
+    app.state.peer_store = PeerStore(client)
+    app.state.tenant_settings = TenantSettingsStore(client)
+    app.state.api_key_store = ApiKeyStore(client)
+    app.state.rate_limiter = RateLimiter(
+        client, int(os.environ.get("RATE_LIMIT_PER_MINUTE", "1200"))
+    )
+    app.state.account_store = AccountStore(client)
+    app.state.tenant_store = TenantStore(client)
+    app.state.link_store = OneTimeLinkStore(client)
 
 
 # LOGGING CONFIGURATION
@@ -117,35 +158,33 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
     runtime_cfg["shadow_mode"] = bool(app.state.shadow_mode)
     apply_runtime_patch(app, runtime_cfg)
 
-    # Redis / Profile Store
+    # Redis — shared state for profiles, sessions, alerts, keys, limits
+    validate_security_config()
+    redis_url = os.environ.get("REDIS_URL", "redis://localhost:6379/0")
+    client = None
     try:
-        from profiles.redis_store import RedisProfileStore
-
-        redis_url = os.environ.get("REDIS_URL", "redis://localhost:6379/0")
-
-        try:
-            import redis as redis_lib
-            pool   = redis_lib.ConnectionPool.from_url(
-                redis_url,
-                max_connections = int(os.environ.get("REDIS_MAX_CONNECTIONS", 50)),
-                decode_responses = True,
-                socket_connect_timeout = 5,
-            )
-            client = redis_lib.Redis(connection_pool=pool)
-            client.ping()
-            logger.info("Redis connected: %s", redis_url.split("@")[-1])
-        except Exception as e:
-            logger.warning(
-                "Redis connection failed (%s). Using in-memory stub. "
-                "Profiles will not persist across restarts.", e
-            )
-            client = None   # RedisProfileStore will use _NoOpRedisStub
-
-        app.state.profile_store = RedisProfileStore(redis_client=client)
-
-    except ImportError:
-        logger.warning("profiles.redis_store not available. Profiles will not persist.")
-        app.state.profile_store = None
+        import redis as redis_lib
+        pool = redis_lib.ConnectionPool.from_url(
+            redis_url,
+            max_connections=int(os.environ.get("REDIS_MAX_CONNECTIONS", 50)),
+            decode_responses=True,
+            socket_connect_timeout=5,
+        )
+        client = redis_lib.Redis(connection_pool=pool)
+        client.ping()
+        logger.info("Redis connected: %s", redis_url.split("@")[-1])
+    except Exception as e:
+        if is_production():
+            raise RuntimeError(
+                f"Redis is required in production and is unreachable: {e}"
+            ) from e
+        logger.warning(
+            "Redis unavailable (%s). Using in-memory state: development only; "
+            "data is lost on restart and not shared between workers.", e
+        )
+        client = None
+    configure_state(app, client)
+    bootstrap_platform_admin(app.state.account_store, app.state.tenant_store, logger)
 
     # Model Registry
     try:
@@ -208,7 +247,12 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
         prior = PopulationPriorProfile.load(prior_path)
         app.state.population_prior = prior
 
-        if prior.is_stale():
+        if not getattr(prior, "built_at", 0):
+            logger.warning(
+                "Population prior has never been built from real profiles. "
+                "Run scripts/build_population_prior.py once you have traffic."
+            )
+        elif prior.is_stale():
             built_at = getattr(prior, "built_at", None)
             age_days = (
                 (time.time() - float(built_at)) / 86400.0
@@ -291,6 +335,10 @@ def create_app() -> FastAPI:
 
     register_middleware(app)
     include_routers(app)
+    # Usable immediately (tests, scripts); lifespan swaps in real Redis
+    configure_state(app)
+    app.state.shadow_mode = SHADOW_MODE_ENABLED
+    app.state.start_time = time.time()
     @app.get("/", include_in_schema=False)
     async def root():
         return {

@@ -93,12 +93,27 @@ function FeedRow({ item }) {
           ))}
         </div>
       )}
+
+      {expanded && (item.reasons || []).length > 0 && (
+        <ul style={{ margin: "8px 0 0", paddingLeft: 18, fontSize: 12, lineHeight: 1.45 }}>
+          {item.reasons.map((reason, idx) => (
+            <li key={`reason-${idx}`}>{reason}</li>
+          ))}
+        </ul>
+      )}
+
+      {expanded && item.would_be_decision && item.would_be_decision !== item.decision && (
+        <div className="mono muted" style={{ marginTop: 6, fontSize: 11 }}>
+          shadow mode: would have been {item.would_be_decision}
+        </div>
+      )}
     </div>
   );
 }
 
 export default function ActionFeed({ feed = [], onSubmit, loading = false }) {
   const [selected, setSelected] = useState("read");
+  const [records, setRecords] = useState("");
 
   return (
     <div className="card" style={{ display: "flex", flexDirection: "column", gap: 10 }}>
@@ -112,9 +127,18 @@ export default function ActionFeed({ feed = [], onSubmit, loading = false }) {
             </option>
           ))}
         </select>
+        <input
+          type="number"
+          min="0"
+          value={records}
+          onChange={(e) => setRecords(e.target.value)}
+          placeholder="records"
+          title="Records read/exported/deleted by this action (drives the volume detector)"
+          style={{ width: 96 }}
+        />
         <button
           className="btn-teal"
-          onClick={() => onSubmit?.(selected)}
+          onClick={() => onSubmit?.(selected, records === "" ? null : Number(records))}
           disabled={loading || !onSubmit}
         >
           {loading ? <span className="spinner" /> : "Evaluate"}

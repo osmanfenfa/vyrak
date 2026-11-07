@@ -4,7 +4,7 @@
 
 .PHONY: help install dev build test lint migrate \
         generate-data train shadow simulate benchmark \
-        rebuild-prior docker-up docker-down clean
+        rebuild-prior docker-up docker-down clean evaluate train-labels dev-local
 
 PYTHON := python3
 PIP    := pip3
@@ -26,6 +26,9 @@ help:
 	@echo "    make shadow           Run shadow mode on synthetic events"
 	@echo "    make simulate         Run 3-phase session simulation"
 	@echo "    make benchmark        Run in-process latency benchmark"
+	@echo "    make dev-local        API with in-memory state (no Redis needed)"
+	@echo "    make evaluate         Red-team detection report on synthetic scenarios"
+	@echo "    make train-labels F=labels.jsonl  Train calibrated GBM from labelled alerts"
 	@echo ""
 	@echo "  Quality"
 	@echo "    make test             Run full test suite"
@@ -60,6 +63,15 @@ train: generate-data
 dev:
 	uvicorn api.main:app --host 0.0.0.0 --port 8000 --reload --log-level info
 
+dev-local:
+	ZELVRYN_ENV=development uvicorn api.main:app --host 127.0.0.1 --port 8000 --reload --log-level info
+
+evaluate:
+	$(PYTHON) scripts/evaluate_detection.py
+
+train-labels:
+	$(PYTHON) scripts/train_from_labels.py $(F)
+
 migrate:
 	alembic -c db/migrations/alembic.ini upgrade head
 
@@ -86,7 +98,7 @@ ingest-cicids:
 
 # ── Tests ─────────────────────────────────────────────────────────────────────
 test:
-	pytest tests/ -v --tb=short -q
+	pytest tests/ --tb=short -q
 
 test-unit:
 	pytest tests/unit/ -v --tb=short

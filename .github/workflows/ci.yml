@@ -1,0 +1,38 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+      - name: Install
+        run: |
+          pip install -r requirements.txt
+          pip install pytest pytest-timeout fakeredis flake8
+      - name: Lint (errors only)
+        run: flake8 api core detectors profiles coldstart ml simulation scripts --select=E9,F63,F7,F82
+      - name: Tests
+        run: pytest -q --timeout=300
+      - name: Detection evaluation (synthetic)
+        run: python scripts/evaluate_detection.py --victims 10 --population 12 --warm-sessions 10
+      - uses: actions/upload-artifact@v4
+        with:
+          name: detection-report
+          path: reports/
+
+  docker:
+    runs-on: ubuntu-latest
+    needs: test
+    steps:
+      - uses: actions/checkout@v4
+      - name: Build image
+        run: docker build -t zelvryn-api:ci .

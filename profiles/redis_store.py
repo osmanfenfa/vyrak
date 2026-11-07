@@ -5,7 +5,11 @@ sub-millisecond read/write access across a horizontally scaled API fleet.
 import json
 import logging
 import time
-from typing import Any, Dict, List, Optional
+import uuid
+from contextlib import contextmanager
+from typing import Any, Dict, Iterator, List, Optional
+
+from profiles.memory_redis import MemoryRedis
 
 from core.profile import BehavioralProfile
 from core.action import UserAction
@@ -30,6 +34,21 @@ class ProfileStorageError(Exception):
     pass
 
 
+class ProfileLockTimeout(ProfileStorageError):
+    """Raised when a per-identity lock cannot be acquired in time."""
+
+
+_RELEASE_LOCK_LUA = """
+if redis.call("get", KEYS[1]) == ARGV[1] then
+    return redis.call("del", KEYS[1])
+else
+    return 0
+end
+"""
+
+DEFAULT_TENANT = "default"
+
+
 class RedisProfileStore:
     """
     Persists and retrieves BehavioralProfile objects using Redis.
@@ -44,6 +63,12 @@ class RedisProfileStore:
         self._redis      = redis_client
         self._ttl        = ttl_seconds
         self._key_prefix = key_prefix
+        if key_prefix == _KEY_PREFIX:
+            self._meta_prefix, self._lock_prefix = _META_PREFIX, _LOCK_PREFIX
+        else:
+            base = key_prefix[: -len("profile:")] if key_prefix.endswith("profile:") else key_prefix
+            self._meta_prefix, self._lock_prefix = base + "meta:", base + "lock:"
+        self._tenant_views: Dict[str, "RedisProfileStore"] = {}
 
         if self._redis is None:
             self._redis = self._create_default_client()
@@ -287,10 +312,61 @@ class RedisProfileStore:
         return f"{self._key_prefix}{user_id}"
 
     def _meta_key(self, user_id: str) -> str:
-        return f"{_META_PREFIX}{user_id}"
+        return f"{self._meta_prefix}{user_id}"
 
     def _lock_key(self, user_id: str) -> str:
-        return f"{_LOCK_PREFIX}{user_id}"
+        return f"{self._lock_prefix}{user_id}"
+
+    # TENANT SCOPING
+    @property
+    def redis(self):
+        return self._redis
+
+    def for_tenant(self, tenant_id: str) -> "RedisProfileStore":
+        """
+        Return a view of this store whose keys are isolated to one tenant.
+        The default tenant keeps the legacy key layout for compatibility.
+        """
+        if not tenant_id or tenant_id == DEFAULT_TENANT:
+            return self
+        view = self._tenant_views.get(tenant_id)
+        if view is None:
+            view = RedisProfileStore(
+                redis_client=self._redis,
+                ttl_seconds=self._ttl,
+                key_prefix=f"zelvryn:t:{tenant_id}:profile:",
+            )
+            self._tenant_views[tenant_id] = view
+        return view
+
+    # CONCURRENCY
+    @contextmanager
+    def lock(self, user_id: str, ttl_ms: int = 5000, wait_s: float = 5.0) -> Iterator[None]:
+        """
+        Per-identity mutual exclusion across workers (load → evaluate → save).
+
+        Uses SET NX PX with a random token; released only by its owner.
+        The TTL bounds how long a crashed worker can hold the lock.
+        """
+        key = self._lock_key(user_id)
+        token = uuid.uuid4().hex
+        deadline = time.monotonic() + wait_s
+        while not self._redis.set(key, token, nx=True, px=ttl_ms):
+            if time.monotonic() >= deadline:
+                raise ProfileLockTimeout(f"Timed out waiting for lock on identity {user_id!r}")
+            time.sleep(0.005)
+        try:
+            yield
+        finally:
+            try:
+                self._redis.eval(_RELEASE_LOCK_LUA, 1, key, token)
+            except Exception:
+                # Backends without Lua (MemoryRedis): compare-then-delete
+                try:
+                    if self._redis.get(key) == token:
+                        self._redis.delete(key)
+                except Exception:
+                    pass
 
     def _update_meta(
         self,
@@ -343,8 +419,8 @@ class RedisProfileStore:
                 "Pass a redis_client explicitly or use fakeredis for testing.",
                 e
             )
-            # Return a no-op stub so the store doesn't crash at import time
-            return _NoOpRedisStub()
+            # In-process fallback so the store doesn't crash (development only)
+            return MemoryRedis()
 
     def __repr__(self) -> str:
         return (
@@ -354,39 +430,6 @@ class RedisProfileStore:
         )
 
 
-class _NoOpRedisStub:
-    """
-    A minimal no-op stub used when Redis is unavailable during testing.
-    """
-    _store: Dict[str, str] = {}
-
-    def get(self, key: str):
-        return self._store.get(key)
-
-    def set(self, key: str, value: str, ex: int = 0):
-        self._store[key] = value
-        return True
-
-    def delete(self, *keys):
-        count = sum(1 for k in keys if k in self._store)
-        for k in keys:
-            self._store.pop(k, None)
-        return count
-
-    def exists(self, key: str) -> int:
-        return 1 if key in self._store else 0
-
-    def expire(self, key: str, seconds: int) -> int:
-        return 1 if key in self._store else 0
-
-    def ttl(self, key: str) -> int:
-        return -1
-
-    def scan(self, cursor: int = 0, match: str = "*", count: int = 100):
-        return (0, [])
-
-    def info(self, section: str = "all") -> Dict:
-        return {}
-
-    def ping(self) -> bool:
-        return True
+# Backwards-compatible name: an isolated, thread-safe in-memory backend
+# (the old stub shared one dict across every instance and ignored TTLs).
+_NoOpRedisStub = MemoryRedis

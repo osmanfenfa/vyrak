@@ -78,7 +78,7 @@ class TestColdStartProtection:
             cold_engine.evaluate_action(
                 UserAction("read", f"d_{i}", timestamp=t)
             )
-            t += 4.0
+            t += 4.0 + (i % 5) * 0.7   # human-like jitter (exact spacing is machine timing)
         assert cold_engine.profile.is_mature(COLD_START_RAMP_ACTIONS)
 
     def test_prior_seeded_profile_has_vector(self, prior_seeded_engine):

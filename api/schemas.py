@@ -25,6 +25,12 @@ class ActionTypeEnum(str, Enum):
     CONFIG = "config"
     ADMIN  = "admin"
 
+class IdentityKindEnum(str, Enum):
+    HUMAN   = "human"
+    AGENT   = "agent"      # AI agent acting with its own credentials
+    SERVICE = "service"    # integration / service account
+
+
 class ModelStateEnum(str, Enum):
     TRAINED  = "trained"
     CANARY   = "canary"
@@ -41,6 +47,8 @@ class MetadataBlock(BaseModel):
     geo_city:     Optional[str]  = Field(None, description="City name")
     latitude:     Optional[float] = Field(None, description="Latitude for geo-velocity check")
     longitude:    Optional[float] = Field(None, description="Longitude for geo-velocity check")
+    records:      Optional[int]  = Field(None, ge=0, description="Records read/exported/deleted by this action (drives the volume detector).")
+    bytes:        Optional[int]  = Field(None, ge=0, description="Bytes transferred by this action.")
 
     model_config = {"extra": "allow"}   # allow arbitrary metadata keys
 
@@ -56,6 +64,7 @@ class AnomalyEntry(BaseModel):
     anomalies:    List[str]  = Field(..., description="Triggered anomaly signal codes")
     bot_prob:     float      = Field(..., description="P(bot) at time of anomaly")
     decision:     str        = Field(..., description="Decision issued")
+    reasons:      List[str]  = Field(default_factory=list, description="Plain-language explanation of each signal")
 
 
 class SessionStartRequest(BaseModel):
@@ -73,6 +82,14 @@ class SessionStartRequest(BaseModel):
         None,
         description="Optional device and location context for cold start bridging.",
     )
+    identity_kind: IdentityKindEnum = Field(
+        IdentityKindEnum.HUMAN,
+        description="human, agent (AI agent) or service. Fixed after an identity's first session.",
+    )
+    peer_group: Optional[str] = Field(
+        None, max_length=64,
+        description="Group of similar identities to compare against (e.g. 'support_agent'). Defaults to identity_kind.",
+    )
 
     @field_validator("user_id")
     @classmethod
@@ -89,6 +106,9 @@ class SessionStartResponse(BaseModel):
     ramp_active:     bool  = Field(..., description="True if the user is in the cold start ramp-up period.")
     shadow_mode:     bool  = Field(..., description="True if the server is operating in shadow (observation-only) mode.")
     started_at:      float = Field(..., description="Unix timestamp of session creation.")
+    identity_kind:   str   = Field("human", description="Identity kind evaluated in this session.")
+    tenant_id:       str   = Field("default", description="Tenant the session belongs to.")
+    device_risk:     Optional[Dict[str, Any]] = Field(None, description="Device/network risk assessed at start (lowers initial trust).")
 
 
 class ActionRequest(BaseModel):
@@ -139,6 +159,10 @@ class DecisionResponse(BaseModel):
     session_id:   str           = Field(..., description="Echo of the evaluated session ID.")
     action_type:  str           = Field(..., description="Echo of the evaluated action type.")
     timestamp:    float         = Field(..., description="Unix timestamp of the evaluation.")
+    reasons:      List[str]     = Field(default_factory=list, description="Plain-language explanation of each triggered signal.")
+    signals:      Dict[str, Any] = Field(default_factory=dict, description="Detector values (sequence surprise, volume, peer score).")
+    would_be_decision: Optional[DecisionEnum] = Field(None, description="Decision that would apply with enforcement on (differs from decision in shadow mode).")
+    alert_id:     Optional[str] = Field(None, description="Alert opened/updated by this action, if any.")
 
 
 class SessionSummaryMetrics(BaseModel):
@@ -163,6 +187,8 @@ class SessionSummaryResponse(BaseModel):
     top_features:     List[FeatureImportanceItem] = Field(default_factory=list, description="Top-5 most important features.")
     session_duration_s: float                = Field(..., description="Wall-clock session duration in seconds.")
     shadow_mode:      bool                   = Field(..., description="Whether shadow mode was active.")
+    identity_kind:    str                    = Field("human", description="Identity kind.")
+    alert_id:         Optional[str]          = Field(None, description="Alert for this session, if any.")
     anomaly_log:      List[AnomalyEntry]     = Field(default_factory=list, description="Full log of all anomalous action evaluations.")
 
 
